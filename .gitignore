@@ -1,0 +1,29 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# log gerado na execucao
+log/
+
+# resultado dos arquivos xml
+resultado/ 
+resultado_old/ 
+
+# debug gerando json das consultas
+debug_respostas/
+
+#db
+omie.db
+*.db
+*.bkp
+<<<<<<< HEAD
+DEV/05_INTEGRACOES/Api_sharepoint/Lista_pastas_sharepoint 1.py
+=======
+DEV/05_INTEGRACOES
+>>>>>>> 3394157 (0)
+Utilitarios/05_Testes_Organizados/Funcionalidade/test_Teste-envio-api 1.py

@@ -1,0 +1,32 @@
+
+🔧 RELATÓRIO DE CORREÇÃO DE IMPORTS
+===================================
+
+📊 ESTATÍSTICAS:
+• Arquivos corrigidos: 0
+• Imports corrigidos: 0
+• Erros encontrados: 0
+
+📁 MAPEAMENTO APLICADO:
+  src.utils -> src.utils.utils
+  src.omie_client_async -> src.adapters.external_apis.omie.omie_client_async
+  src.extrator_async -> src.application.services.extrator_async
+  src.verificador_xmls -> src.application.services.verificador_xmls
+  src.upload_onedrive -> src.adapters.external_apis.onedrive.upload_onedrive
+  src.compactador_resultado -> src.application.services.compactador_resultado
+  src.report_arquivos_vazios -> src.application.services.report_arquivos_vazios
+  src.atualizar_caminhos_arquivos -> src.application.services.atualizar_caminhos_arquivos
+  src.atualizar_query_params_ini -> src.infrastructure.config.atualizar_query_params_ini
+  utils -> src.utils.utils
+  src.Utils.check_db_structure -> src.adapters.database.repositories.check_db_structure
+  src.Utils.verificar_duplicatas -> src.adapters.database.repositories.verificar_duplicatas
+  src.Utils.padronizar_datas_otimizado -> src.adapters.database.repositories.padronizar_datas_otimizado
+  src.Deprecated.baixar_parallel -> src.adapters.database.repositories.baixar_parallel
+  src.Deprecated.gerenciador_modos -> src.adapters.database.repositories.gerenciador_modos
+  src.Deprecated.main_refatorado -> src.infrastructure.config.main_refatorado
+  src.Deprecated.relatorio_rapido -> src.adapters.external_apis.relatorio_rapido
+
+💾 BACKUP CRIADO: backup_imports_20250723_012409
+🏗️ ESTRUTURA CORRIGIDA: src_novo
+
+✅ CORREÇÃO CONCLUÍDA!

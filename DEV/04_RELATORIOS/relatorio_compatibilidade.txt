@@ -1,0 +1,75 @@
+================================================================================
+RELAToRIO DE COMPATIBILIDADE ENTRE MoDULOS
+================================================================================
+
+RESUMO EXECUTIVO:
+- Modulos verificados: 4
+- Funcões faltantes: 17
+- Problemas de tipo: 0
+- Possiveis redundâncias: 0
+
+🔴 PROBLEMAS CRiTICOS - FUNcÕES FALTANTES:
+   - gerar_xml_path
+   - marcar_como_erro
+   - marcar_como_baixado
+   - obter_registros_pendentes
+   - salvar_varias_notas
+   - inicializar_banco_e_indices
+   - atualizar_status_xml
+   - gerar_xml_path
+   - iniciar_db
+   - limpar_registros_invalidos_reprocessados
+   - remover_registros_sem_dEmi_e_listar_dias
+   - respeitar_limite_requisicoes
+   - salvar_varias_notas
+   - marcar_registros_invalidos_e_listar_dias
+   - inicializar_banco_e_indices
+   - criar_lockfile
+   - listar_arquivos_xml_em
+
+DETALHES POR MoDULO:
+----------------------------------------
+
+src/omie_client_async.py:
+   Imports: []
+   Funcões faltantes: []
+   Fluxo de dados (top 5):
+      with_retries: []
+      wraps: ['arg:func']
+      range: ['const:int']
+      ValueError: ['const:str', 'const:str']
+      int: []
+
+src/extrator_async.py:
+   Imports: ['gerar_xml_path', 'marcar_como_erro', 'marcar_como_baixado', 'obter_registros_pendentes', 'salvar_varias_notas', 'inicializar_banco_e_indices', 'atualizar_status_xml', 'gerar_xml_path', 'iniciar_db', 'limpar_registros_invalidos_reprocessados', 'remover_registros_sem_dEmi_e_listar_dias', 'respeitar_limite_requisicoes', 'salvar_varias_notas', 'marcar_registros_invalidos_e_listar_dias', 'inicializar_banco_e_indices']
+   Funcões faltantes: ['gerar_xml_path', 'marcar_como_erro', 'marcar_como_baixado', 'obter_registros_pendentes', 'salvar_varias_notas', 'inicializar_banco_e_indices', 'atualizar_status_xml', 'gerar_xml_path', 'iniciar_db', 'limpar_registros_invalidos_reprocessados', 'remover_registros_sem_dEmi_e_listar_dias', 'respeitar_limite_requisicoes', 'salvar_varias_notas', 'marcar_registros_invalidos_e_listar_dias', 'inicializar_banco_e_indices']
+   Fluxo de dados (top 5):
+      with_download_retry: []
+      iniciar_db: ['arg:db_name', 'arg:TABLE_NAME']
+      obter_registros_pendentes: ['arg:db_name']
+      len: ['arg:registros_pendentes', 'arg:tasks', 'arg:registros_processados', 'arg:tasks', 'arg:lote_tasks', 'arg:dias_com_registros_invalidos', 'arg:registros_processados']
+      enumerate: ['arg:registros_pendentes', 'const:int']
+
+src/upload_onedrive.py:
+   Imports: []
+   Funcões faltantes: []
+
+src/compactador_resultado.py:
+   Imports: ['criar_lockfile', 'listar_arquivos_xml_em']
+   Funcões faltantes: ['criar_lockfile', 'listar_arquivos_xml_em']
+   Fluxo de dados (top 5):
+      int: []
+      Path: ['arg:root']
+      main: []
+      listar_arquivos_xml_em: ['arg:origem', 'arg:pasta']
+      ThreadPoolExecutor: []
+
+================================================================================
+RECOMENDAcÕES:
+================================================================================
+
+1. CORRIGIR FUNcÕES FALTANTES:
+   - Implementar funcões faltantes no utils.py
+   - Ou atualizar imports nos modulos
+
+✅ STATUS: REQUER ATENcoO
