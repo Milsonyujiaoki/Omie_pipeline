@@ -1,0 +1,97 @@
+04:46:52.664 - DEBUG - [asyncio] - Using proactor: IocpProactor
+04:46:52.665 - INFO - [__main__] - 🚀 Iniciando teste específico para erro 425
+04:46:52.665 - INFO - [__main__] - ============================================================
+04:46:52.666 - INFO - [__main__] - Carregando configurações...
+04:46:52.667 - INFO - [__main__] - ✅ Configurações carregadas - App Key: 5702859630...
+04:46:52.667 - INFO - [__main__] - Buscando 10 registros para data 2025-07-20...
+04:46:55.241 - INFO - [__main__] - Encontrados 10 registros para teste
+04:46:55.241 - INFO - [__main__] - 📋 10 registros selecionados para teste
+04:46:56.616 - INFO - [__main__] - 🔧 Cliente configurado com 1.5 calls/sec
+04:46:56.617 - INFO - [__main__] - \n📥 [1/10] Baixando XML - NFe: 01367524, Chave: 35250759279145000116...
+04:46:57.095 - WARNING - [src.omie_client_async] - [API] Erro 500 da Omie. Tentativa 1/3. Esperando 1.5s...
+04:46:58.762 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 8.0s
+04:47:06.942 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada: 3 erros 500 consecutivos
+04:47:06.942 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 3/3. Backoff agressivo: 15.0s
+04:47:21.946 - ERROR - [src.omie_client_async] - [API] Falha permanente 'ObterNfe' - Taxa erro 500: 100.0% (3/3)
+04:47:21.946 - ERROR - [src.omie_client_async] - [API] Falha permanente 'ObterNfe' - Taxa erro 425: 0.0% (0/3)
+04:47:21.947 - ERROR - [src.omie_client_async] - [API] Erros consecutivos - 500: 3, 425: 0
+04:47:21.947 - WARNING - [__main__] - Outro tipo de erro registrado: [API] Falha permanente ao chamar 'ObterNfe' apos 3 tentativas.
+04:47:21.947 - WARNING - [__main__] -    ❌ Outro erro: [API] Falha permanente ao chamar 'ObterNfe' apos 3 tentativas....
+04:47:22.615 - INFO - [__main__] - \n📥 [2/10] Baixando XML - NFe: 01367525, Chave: 35250759279145000116...
+04:47:22.813 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 7.0s
+04:47:29.967 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 11.0s
+04:47:41.157 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 3/3. Backoff agressivo: 18.0s
+04:47:52.612 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:47:52.612 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:47:53.280 - INFO - [__main__] - \n📥 [3/10] Baixando XML - NFe: 01367526, Chave: 35250759279145000116...
+04:47:53.450 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 10.0s
+04:48:03.621 - ERROR - [src.omie_client_async] - [API] INSTABILIDADE EXTREMA detectada: 8 erros consecutivos
+04:48:03.622 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 14.0s
+04:48:17.793 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 3/3. Backoff agressivo: 21.0s
+04:48:23.278 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:48:23.278 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:48:23.946 - INFO - [__main__] - \n📊 Checkpoint 3/10:
+04:48:23.946 - INFO - [__main__] -    Sucessos: 0
+04:48:23.947 - INFO - [__main__] -    Erros 425: 0
+04:48:23.947 - INFO - [__main__] -    Outros erros: 3
+04:48:23.947 - INFO - [__main__] - \n📥 [4/10] Baixando XML - NFe: 01367527, Chave: 35250759279145000116...
+04:48:24.126 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 13.0s
+04:48:37.281 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 17.0s
+04:48:53.940 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:48:53.940 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:48:54.609 - INFO - [__main__] - \n📥 [5/10] Baixando XML - NFe: 01367528, Chave: 35250759279145000116...
+04:48:54.868 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 15.0s
+04:49:10.032 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 19.0s
+04:49:24.596 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:49:24.596 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:49:25.265 - INFO - [__main__] - \n📥 [6/10] Baixando XML - NFe: 01367529, Chave: 35250759279145000116...
+04:49:25.476 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 17.0s
+04:49:42.660 - CRITICAL - [src.omie_client_async] - [API] CIRCUIT BREAKER ATIVADO: 15 falhas consecutivas
+04:49:42.661 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 21.0s
+04:49:55.257 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:49:55.257 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:49:55.925 - INFO - [__main__] - \n📊 Checkpoint 6/10:
+04:49:55.925 - INFO - [__main__] -    Sucessos: 0
+04:49:55.926 - INFO - [__main__] -    Erros 425: 0
+04:49:55.926 - INFO - [__main__] -    Outros erros: 6
+04:49:55.927 - INFO - [__main__] - \n📥 [7/10] Baixando XML - NFe: 01367530, Chave: 35250759279145000116...
+04:49:56.184 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 19.0s
+04:50:15.402 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 23.0s
+04:50:25.998 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:50:25.998 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:50:26.666 - INFO - [__main__] - \n📥 [8/10] Baixando XML - NFe: 01367531, Chave: 35250759279145000116...
+04:50:26.815 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 21.0s
+04:50:47.996 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 25.0s
+04:50:56.670 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:50:56.671 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:50:57.353 - INFO - [__main__] - \n📥 [9/10] Baixando XML - NFe: 01367532, Chave: 35250759279145000116...
+04:50:57.550 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 23.0s
+04:51:20.738 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 27.0s
+04:51:27.347 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:51:27.347 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:51:28.016 - INFO - [__main__] - \n📊 Checkpoint 9/10:
+04:51:28.016 - INFO - [__main__] -    Sucessos: 0
+04:51:28.017 - INFO - [__main__] -    Erros 425: 0
+04:51:28.017 - INFO - [__main__] -    Outros erros: 9
+04:51:28.017 - INFO - [__main__] - \n📥 [10/10] Baixando XML - NFe: 01367533, Chave: 35250759279145000116...
+04:51:28.081 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 1/3. Backoff agressivo: 25.0s
+04:51:53.270 - WARNING - [src.omie_client_async] - [API] Instabilidade detectada - Erro 500. Tentativa 2/3. Backoff agressivo: 29.0s
+04:51:58.020 - WARNING - [__main__] - Outro tipo de erro registrado: TimeoutError
+04:51:58.020 - WARNING - [__main__] -    ⏰ Timeout após 30s
+04:51:58.693 - INFO - [__main__] - \n🏥 Métricas de saúde da API:
+04:51:58.694 - INFO - [__main__] -    total_requests: 23
+04:51:58.694 - INFO - [__main__] -    error_500_count: 23
+04:51:58.695 - INFO - [__main__] -    error_425_count: 0
+04:51:58.695 - INFO - [__main__] -    consecutive_500_errors: 23
+04:51:58.695 - INFO - [__main__] -    consecutive_425_errors: 0
+04:51:58.695 - INFO - [__main__] -    error_rate_500_percent: 100.000
+04:51:58.695 - INFO - [__main__] -    error_rate_425_percent: 0.000
+04:51:58.696 - INFO - [__main__] -    instability_detected: True
+04:51:58.696 - INFO - [__main__] -    extreme_instability: True
+04:51:58.696 - INFO - [__main__] -    circuit_breaker_active: True
+04:51:58.696 - INFO - [__main__] -    last_success_time: 0
+04:51:58.696 - INFO - [__main__] -    instability_duration: 301.598
+04:51:58.696 - INFO - [__main__] - \n============================================================
+04:51:58.697 - INFO - [__main__] - 📋 GERANDO RELATÓRIO FINAL...
+04:51:58.697 - INFO - [__main__] - ============================================================
+04:51:58.699 - INFO - [__main__] - 💾 Relatório salvo em: relatorio_teste_425_20250721_045158.txt

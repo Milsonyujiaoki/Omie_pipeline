@@ -1,0 +1,26 @@
+
+🧪 RELATÓRIO DO TESTE DE ERRO 425
+================================
+
+📊 ESTATÍSTICAS GERAIS:
+- Duração total do teste: 306.03s
+- Total de tentativas: 10
+- Sucessos: 0
+- Taxa de sucesso: 0.0%
+
+❌ ANÁLISE DE ERROS:
+- Erros 425 ("Too Early"): 0
+- Erros 500 (Server Error): 0
+- Outros erros: 10
+- Violações de rate limiting: 0
+
+ANÁLISE DE PERFORMANCE:
+- Tempo total gasto em retries: 0.00s
+- Tempo médio de resposta: 0.00ms
+- Requisições por segundo médio: 0.03
+
+ PADRÕES DE ERRO 425:
+- Nenhum erro 425 detectado
+
+💡 CONCLUSÕES:
+✅ Nenhum erro 425 detectado - API estável nas condições testadas\n❌ Baixa taxa de sucesso - necessário revisar configuração
