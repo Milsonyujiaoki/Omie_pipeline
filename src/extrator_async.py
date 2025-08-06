@@ -15,8 +15,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict
 from threading import Lock
-
+import concurrent.futures
 import aiohttp
+import aiosqlite
+import aiofiles
 
 # Adicionar o diretório raiz ao path para importações
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -29,26 +31,15 @@ from src.utils import (
     conexao_otimizada,
     gerar_pasta_xml_path,
     atualizar_anomesdia,
-    normalizar_data
+    normalizar_data,
+    respeitar_limite_requisicoes_async,
+    log_configuracoes
 )
-from src.omie_client_async import OmieClient, carregar_configuracoes
-from main_old import executar_atualizacao_anomesdia
+from src.omie_client_async import OmieClient, carregar_configuracoes_client
 
-
+# Configuração de logging centralizado
 # ---------------------------------------------------------------------------
-# Configuracoo de logging centralizado
-# ---------------------------------------------------------------------------
-# logger = logging.getLogger(__name__)
 
-# Configuração básica de logging para acompanhar execução
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('log/extrator_async.log', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
 logger = logging.getLogger(__name__)
 
 TABLE_NAME = "notas"
@@ -104,24 +95,28 @@ def normalizar_nota(nf: dict[str, Any]) -> dict[str, Any]:
         return {}
 
 
-async def call_api_com_retentativa(
+async def call_api(
     client: OmieClient,
     session: aiohttp.ClientSession,
     metodo: str,
     payload: dict[str, Any],
 ):
+    """
+    Função síncrona para chamada de API com retentativas e backoff.
+    """
+    import time
     max_retentativas = 3
     for tentativa in range(1, max_retentativas + 1):
         try:
-            respeitar_limite_requisicoes()
+            await respeitar_limite_requisicoes_async()
             return await client.call_api(session, metodo, payload)
-        
+
         except asyncio.TimeoutError as exc:
             logger.warning("[RETRY] Timeout - Esperando %ss (tentativa %s)", 10 * tentativa, tentativa)
-            await asyncio.sleep(10 * tentativa)
+            await asyncio.sleep(5 * tentativa)
         except asyncio.CancelledError as exc:
-            logger.warning("[RETRY] CancelledError - Esperando %ss (tentativa %s)", 10 * tentativa, tentativa)
-            await asyncio.sleep(10 * tentativa)
+            logger.warning("[RETRY] CancelledError - Esperando %ss (tentativa %s)", 5 * tentativa, tentativa)
+            await asyncio.sleep(5 * tentativa)
 
         except aiohttp.ClientResponseError as exc:
             if exc.status == 429:
@@ -129,13 +124,24 @@ async def call_api_com_retentativa(
                 logger.warning(
                     "[RETRY] 429 - Esperando %ss (tentativa %s)", tempo_espera, tentativa
                 )
-                await asyncio.sleep(tempo_espera)
+                time.sleep(tempo_espera)
+            
+            if exc.status == 403:
+                logger.error("[API] Permissão negada (403 Forbidden): %s", exc)
+                raise RuntimeError(
+                    "Permissão negada pela API Omie (403 Forbidden). "
+                    "Verifique app_key, app_secret, permissões do app e se o endpoint está correto."
+                ) from exc    
+            
+            elif exc.status == 404:
+                logger.error("[API] Recurso não encontrado: %s", exc)
+                raise
             elif exc.status >= 500:
                 tempo_espera = 1 + tentativa
                 logger.warning(
                     "[RETRY] %s - Erro servidor. Tentativa %s", exc.status, tentativa
                 )
-                await asyncio.sleep(tempo_espera)
+                time.sleep(tempo_espera)
             else:
                 logger.error("[API] Falha irreversivel: %s", exc)
                 raise
@@ -146,7 +152,6 @@ async def call_api_com_retentativa(
 
     raise RuntimeError(f"[API] Falha apos {max_retentativas} tentativas para {metodo}")
 
-import aiosqlite
 
 async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas") -> int:
     """
@@ -213,10 +218,8 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
 
 
 async def listar_nfs(client: OmieClient, config: dict[str, Any], db_name: str):
-    logger.info("[NFS] Iniciando listagem de notas fiscais...")
-    
-    
-    # Verifica otimizações disponíveis para relatórios de progresso
+    logger.info("[EXTRATOR.ASYNC.LISTAR.NFS] Iniciando listagem de notas fiscais...")
+
     try:
         from src.utils import _verificar_views_e_indices_disponiveis
         db_otimizacoes = _verificar_views_e_indices_disponiveis(db_name)
@@ -224,18 +227,17 @@ async def listar_nfs(client: OmieClient, config: dict[str, Any], db_name: str):
     except ImportError:
         db_otimizacoes = {}
         usar_views = False
-    
-    pagina = 1
+
     total_registros_salvos = 0
-    
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=360)) as session:
-        while True:
+
+    async def processar_pagina(pagina: int, semaphore: asyncio.Semaphore, session: aiohttp.ClientSession):
+        async with semaphore:
             payload = {
                 "pagina": pagina,
-                "registros_por_pagina": config["records_per_page"],
+                "registros_por_pagina": config.get("records_per_page", 200),
                 "apenas_importado_api": "N",
-                "dEmiInicial": config["start_date"],
-                "dEmiFinal": config["end_date"],
+                "dEmiInicial": config.get("start_date", "01/01/2025"),
+                "dEmiFinal": config.get("end_date", "31/12/2025"),
                 "tpNF": 1,
                 "tpAmb": 1,
                 "cDetalhesPedido": "N",
@@ -243,34 +245,53 @@ async def listar_nfs(client: OmieClient, config: dict[str, Any], db_name: str):
                 "ordenar_por": "CODIGO",
             }
             try:
-                data = await call_api_com_retentativa(client, session, "ListarNF", payload)
+                data = await client.call_api(session, "ListarNF", payload)
                 notas = data.get("nfCadastro", [])
                 if not notas:
                     logger.info("[NFS] Pagina %s sem notas.", pagina)
-                    break
+                    return 0
 
-                registros = [r for nf in notas if (r := normalizar_nota(nf))]
-                resultado_salvamento = salvar_varias_notas(registros, db_name)
-                total_registros_salvos += resultado_salvamento.get('inseridos', len(registros))
+                loop = asyncio.get_running_loop()
+                registros = await loop.run_in_executor(
+                    None,
+                    lambda: [r for nf in notas if (r := normalizar_nota(nf))]
+                )
+                resultado_salvamento = await loop.run_in_executor(
+                    None,
+                    lambda: salvar_varias_notas(registros, db_name)
+                )
                 total_registros_processados = resultado_salvamento.get('total_processados', len(registros))
-
-                total_paginas = data.get("total_de_paginas", 1)
-                logger.info("[NFS] Pagina %s/%s processada (%s registros).", pagina, total_paginas, total_registros_processados)
-                
-                
-                if pagina >= total_paginas:
-                    break
-                pagina += 1
-
+                logger.info("[NFS] Pagina %s processada (%s registros).", pagina, total_registros_processados)
+                return resultado_salvamento.get('inseridos', len(registros))
             except Exception as exc:
                 logger.exception("[NFS] Erro na listagem pagina %s: %s", pagina, exc)
-                break
-    
+                return 0
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=360)) as session:
+        # Descobrir o total de páginas primeiro
+        payload_inicial = {
+            "pagina": 1,
+            "registros_por_pagina": config.get("records_per_page", 200),
+            "apenas_importado_api": "N",
+            "dEmiInicial": config.get("start_date", "01/01/2025"),
+            "dEmiFinal": config.get("end_date", "31/12/2025"),
+            "tpNF": 1,
+            "tpAmb": 1,
+            "cDetalhesPedido": "N",
+            "cApenasResumo": "S",
+            "ordenar_por": "CODIGO",
+        }
+        data_inicial = await client.call_api(session, "ListarNF", payload_inicial)
+        total_paginas = data_inicial.get("total_de_paginas", 1)
+        logger.info(f"[NFS] Total de páginas a processar: {total_paginas}")
+
+        semaphore = asyncio.Semaphore(2)  # Limite de 2 requisições concorrentes
+        tasks = [processar_pagina(p, semaphore, session) for p in range(1, total_paginas + 1)]
+        resultados = await asyncio.gather(*tasks)
+        total_registros_salvos = sum(resultados)
+
     logger.info(f"[NFS] Listagem concluida. {total_registros_salvos} registros processados.")
     
-
-
-
 async def baixar_xml_individual(
     session: aiohttp.ClientSession,
     client: OmieClient,
@@ -292,16 +313,19 @@ async def baixar_xml_individual(
             
             
             pasta.mkdir(parents=True, exist_ok=True)
-            rebaixado = caminho.exists()
+            baixado_novamente = caminho.exists()
 
-            data = await call_api_com_retentativa(
-                client, session, "ObterNfe", {"nIdNfe": nIdNF}
-            )
+            data = await client.call_api(session, "ObterNfe", {"nIdNfe": nIdNF})
             xml_str = html.unescape(data.get("cXmlNfe", ""))
 
-            caminho.write_text(xml_str, encoding="utf-8")
-            atualizar_status_xml(db_name, chave, caminho, xml_str, rebaixado)
-            logger.info("[XML] XML salvo: %s", caminho)
+            if not xml_str.strip():
+                logger.warning(f"[XML] XML vazio recebido para chave {chave}. Não será salvo.")
+                atualizar_status_xml(db_name, chave, caminho, xml_str, baixado_novamente, xml_vazio=1)
+            else:
+                async with aiofiles.open(caminho, "w", encoding="utf-8") as f:
+                    await f.write(xml_str)
+                atualizar_status_xml(db_name, chave, caminho, xml_str, baixado_novamente)
+                logger.info("[XML] XML salvo: %s", caminho)
         except Exception as exc:
             logger.error("[XML] Falha ao baixar XML %s: %s", chave, exc)
 
@@ -353,7 +377,31 @@ async def baixar_xmls(client: OmieClient, db_name: str, db_path: str = "omie.db"
 
 async def main():
     logger.info("[MAIN] Inicio da execucao assincrona")
-    config = carregar_configuracoes()
+    """ # Criação do diretório
+    log_dir = Path("log")
+    log_dir.mkdir(exist_ok=True)
+    
+    # Timestamp único
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = log_dir / f"extrator_async_{timestamp}.log" """
+
+    # Configuração básica de logging para acompanhar execução
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('log/extrator_async.log', encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    # Use explicitamente o carregar_configuracoes do omie_client_async
+    config = carregar_configuracoes_client()
+
+    # Log das credenciais para debug
+    logger.info(f"[CREDENCIAIS] app_key: {config.get('app_key')}, app_secret: {config.get('app_secret')}")
+    if not config.get('app_key') or not config.get('app_secret'):
+        logger.error("[CREDENCIAIS] app_key ou app_secret estão vazios! Verifique o arquivo configuracao.ini e a função carregar_configuracoes.")
+
     db_name = config.get("db_name", "omie.db")
 
     client = OmieClient(

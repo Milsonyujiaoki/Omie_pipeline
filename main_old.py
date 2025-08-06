@@ -45,7 +45,13 @@ from typing import Any, Dict, List, Optional, NamedTuple, Tuple
 from dataclasses import dataclass
 from contextlib import contextmanager
 import xml.etree.ElementTree as ET
-from src.utils import atualizar_campos_registros_pendentes
+from src.utils import (
+    atualizar_campos_registros_pendentes, 
+    conexao_otimizada,
+    limpar_cache_indexacao_xmls,
+    obter_estatisticas_cache,
+    gerar_xml_path_otimizado
+)
 
 # =============================================================================
 # Importacões dos modulos locais
@@ -312,7 +318,7 @@ def carregar_configuracoes(config_path: str = "configuracao.ini") -> dict:
 
 def log_configuracoes(config: dict, logger) -> None:
     for secao, valores in config.items():
-        logger.info(f"[CONFIG] Seção: {secao}")
+        logger.info(f"[MAIN.CONFIG] Seção: {secao}")
         for chave, valor in valores.items():
             logger.info(f"    {chave}: {valor}")
 # =============================================================================
@@ -417,25 +423,26 @@ def executar_atualizacao_caminhos() -> None:
         Exception: Erros durante atualizacao soo logados e noo propagados
     """
     try:
-        logger.info("[CAMINHOS] Iniciando atualizacao de caminhos no banco (incluindo ZIPs)...")
+        logger.info("[CAMINHOS] Iniciando atualizacao de caminhos no banco...")
         t0 = time.time()
         
         # Verificação prévia: há arquivos para processar?
         config = carregar_configuracoes()
-        resultado_dir = Path(config['resultado_dir'])
+        resultado_dir = Path(config.get('resultado_dir', 'resultado'))
         
         # Conta arquivos XML e ZIPs
         arquivos_xml = list(resultado_dir.rglob("*.xml"))
-        arquivos_zip = list(resultado_dir.rglob("*.zip"))
+        #arquivos_zip = list(resultado_dir.rglob("*.zip"))
+        total_arquivos = len(arquivos_xml)  # + len(arquivos_zip)
         
-        total_arquivos = len(arquivos_xml) + len(arquivos_zip)
+        #total_arquivos = len(arquivos_xml) + len(arquivos_zip)
         
         if total_arquivos == 0:
             logger.warning("[CAMINHOS] Nenhum arquivo XML ou ZIP encontrado - pulando atualização")
             return
-        
-        logger.info(f"[CAMINHOS] Encontrados {len(arquivos_xml)} XMLs e {len(arquivos_zip)} ZIPs para processar")
-        
+
+        logger.info(f"[CAMINHOS] Encontrados {len(arquivos_xml)} XMLs para processar")
+
         # Import local para evitar dependência circular
         from src import atualizar_caminhos_arquivos
         atualizar_caminhos_arquivos.atualizar_caminhos_no_banco()
@@ -468,6 +475,62 @@ def executar_atualizacao_caminhos() -> None:
         logger.error("[CAMINHOS] Pipeline continuara sem atualizacao")
 
 
+def executar_atualizacao_anomesdia() -> None:
+    """
+    Executa atualização da indexação temporal (anomesdia) no banco de dados.
+    
+    FUNCIONALIDADES:
+    - Atualiza campo anomesdia para registros sem indexação temporal
+    - Usa função otimizada do módulo utils
+    - Logging detalhado de progresso e resultados
+    - Tratamento robusto de erros
+    
+    Processo:
+    1. Identifica registros sem campo anomesdia preenchido
+    2. Extrai data de emissão (dEmi) e converte para formato numérico
+    3. Atualiza registros em lotes otimizados
+    4. Gera estatísticas de progresso
+    
+    Benefícios:
+    - Consultas temporais mais rápidas (índice numérico)
+    - Views otimizadas funcionam corretamente
+    - Relatórios por período mais eficientes
+    - Análises temporais otimizadas
+    
+    Returns:
+        None
+        
+    Raises:
+        Exception: Erros durante atualização são logados e não propagados
+    """
+    try:
+        logger.info("[PIPELINE.ANOMESDIA] Iniciando atualização do campo anomesdia ...")
+        t0 = time.time()
+        
+        # Importa função do módulo utils
+        from src.utils import atualizar_anomesdia
+        
+        # Executa atualização com logging detalhado
+        logger.info("[PIPELINE.ANOMESDIA] Processando registros sem campo anomesdia...")
+        registros_atualizados = atualizar_anomesdia(db_path="omie.db")
+        
+        t1 = time.time()
+        duracao = t1 - t0
+        
+        # Log de resultados
+        if registros_atualizados > 0:
+            velocidade = registros_atualizados / duracao if duracao > 0 else 0
+            logger.info(f"[PIPELINE.ANOMESDIA.SUCESSO] {registros_atualizados:,} registros indexados temporalmente")
+            logger.info(f"[PIPELINE.ANOMESDIA.PERFORMANCE] Tempo: {formatar_tempo_total(duracao)} ({duracao:.2f}s), Velocidade: {velocidade:.0f} reg/s")
+        else:
+            logger.info("[PIPELINE.ANOMESDIA.NENHUM] Todos os registros já possuem indexação temporal")
+            logger.info(f"[PIPELINE.ANOMESDIA.PERFORMANCE] Tempo total: {duracao:.2f}s, nenhum registro atualizado")
+        
+    except Exception as e:
+        logger.exception(f"[PIPELINE.ANOMESDIA.ERRO] Erro durante atualização da indexação temporal: {e}")
+        logger.warning("[PIPELINE.ANOMESDIA.CONTINUACAO] Pipeline continuará sem indexação temporal completa")
+
+
 def _executar_async_com_config(config: Dict[str, Any]) -> None:
     """
     Executa extrator assíncrono com configurações específicas.
@@ -478,12 +541,18 @@ def _executar_async_com_config(config: Dict[str, Any]) -> None:
     try:
         # Import local para evitar dependência circular
         from src.extrator_async import baixar_xmls, listar_nfs
-        from src.omie_client_async import OmieClient
-        
+        from src.omie_client_async import OmieClient, carregar_configuracoes_client
+        config = carregar_configuracoes_client()
+        # Credenciais e URLs da API Omie
+        if not config.get('app_key') or not config.get('app_secret'):
+            raise ValueError("app_key e app_secret são obrigatórios no arquivo de configuração")
+        for v, k in config.items():
+            logger.info(f"[ASYNC.CONFIG] Configurações carregadas com sucesso {v}: {k}")
+
         # Criar cliente com configurações
         client = OmieClient(
-            app_key=config['app_key'],
-            app_secret=config['app_secret'],
+            app_key=config.get('app_key'),
+            app_secret=config.get('app_secret'),
             calls_per_second=config.get('calls_per_second', 4)
         )
         
@@ -503,21 +572,19 @@ async def _pipeline_async_completo(client, config: Dict[str, Any]) -> None:
     
     db_name = "omie.db"
     t1 = time.time()
-    logger.info("[ASYNC.PIPELINE] Iniciando pipeline assíncrono completo")
-    logger.info(f"[ASYNC.PIPELINE] iniciando iniciar banco de dados: {db_name}")
-    
+    logger.info("[PIPELINE.ASYNC] Iniciando pipeline assíncrono completo")
+    logger.info(f"[PIPELINE.ASYNC] iniciando iniciar banco de dados: {db_name}")
+
     # Inicializar banco
     iniciar_db(db_name)
     t2 = time.time()
-    logger.info(f"[ASYNC.PIPELINE] Banco de dados inicializado em {formatar_tempo_total(t2 - t1)} ({t2 - t1:.2f}s)")
-    
-    # Executar listagem
-    logger.info("[ASYNC.PIPELINE] Iniciando listagem assíncrona")
+    logger.info(f"[PIPELINE.ASYNC] Banco de dados inicializado em {formatar_tempo_total(t2 - t1)} ({t2 - t1:.2f}s)")
+    logger.info("[PIPELINE.ASYNC] Iniciando listagem e download de notas fiscais assíncronos")
     t3 = time.time()
     # Lista as notas fiscais da API Omie e salva no banco de dados
     await listar_nfs(client, config, db_name)
     t4 = time.time()
-    logger.info(f"[ASYNC.PIPELINE] Listagem concluída em {formatar_tempo_total(t4 - t3)} ({t4 - t3:.2f}s)")
+    logger.info(f"[PIPELINE.ASYNC] Listagem concluída em {formatar_tempo_total(t4 - t3)} ({t4 - t3:.2f}s)")
     
     
     # =============================================================================
@@ -525,8 +592,10 @@ async def _pipeline_async_completo(client, config: Dict[str, Any]) -> None:
     # =============================================================================
     logger.info("[FASE 3.5] - Atualizando indexação temporal (anomesdia)...")
     try:
+        logger.info("[PIPELINE.ASYNC] Iniciando indexação temporal - ANOMESDIA EM TODOS CAMPOS")
         # Vai popular o campo anomesdia
         executar_atualizacao_anomesdia()
+        logger.info("[PIPELINE.ASYNC] Indexação temporal concluída com sucesso")
         logger.info("[FASE 3.5] - ✓ Indexação temporal concluída com sucesso")
     except Exception as e:
         logger.exception(f"[FASE 3.5] Erro durante indexação temporal: {e}")
@@ -673,6 +742,155 @@ def executar_upload_resultado_onedrive() -> None:
         logger.error("[PIPELINE.ONEDRIVE.CONTINUACAO] Pipeline continuara sem upload")
 
 
+
+def executar_verificador_xmls() -> None:
+    """
+    Executa verificacao de integridade dos arquivos XML baixados.
+    
+    OTIMIZAÇÕES IMPLEMENTADAS:
+    - Cria índices de performance antes da execução
+    - Usa conexão otimizada com PRAGMAs
+    - Aplica índices específicos para consulta xml_baixado = 0
+    - Logging detalhado de performance
+    
+    Verificacões realizadas:
+    1. Validacoo de estrutura XML (well-formed)
+    2. verificacao de encoding correto
+    3. Validacoo de campos obrigatorios
+    4. Checagem de consistência de dados
+    5. atualizacao de status no banco de dados
+    
+    Caracteristicas:
+    - Processamento paralelo para performance
+    - Validacoo XML rigorosa
+    - Deteccoo de arquivos corrompidos
+    - Marcacoo automatica de reprocessamento
+    - Estatisticas detalhadas de validacoo
+    - Índices otimizados para consultas rápidas
+    
+    Returns:
+        None
+        
+    Raises:
+        Exception: Erros durante verificacao soo logados e noo propagados
+    """
+    try:
+        logger.info("[PIPELINE.VERIFICADOR] Iniciando verificacao de integridade dos XMLs")
+        t0 = time.time()
+        
+        # 0. CACHE: Limpar cache para execução limpa e obter estatísticas iniciais
+        logger.info("[PIPELINE.VERIFICADOR.CACHE] Preparando sistema de cache...")
+        try:
+            # Obtém estatísticas antes da limpeza
+            stats_iniciais = obter_estatisticas_cache()
+            if stats_iniciais['directories_cached'] > 0:
+                logger.info(f"[PIPELINE.VERIFICADOR.CACHE] Cache existente: {stats_iniciais['directories_cached']} dirs, {stats_iniciais['total_files_cached']} arquivos")
+            
+            # Limpa cache para execução limpa (opcional, baseado em configuração)
+            cache_limpo = limpar_cache_indexacao_xmls()
+            if cache_limpo > 0:
+                logger.info(f"[PIPELINE.VERIFICADOR.CACHE] Cache limpo: {cache_limpo} entradas removidas")
+            else:
+                logger.info("[PIPELINE.VERIFICADOR.CACHE] Cache já estava limpo")
+                
+        except Exception as cache_error:
+            logger.warning(f"[PIPELINE.VERIFICADOR.CACHE] Erro no gerenciamento de cache: {cache_error}")
+        
+        # 1. OTIMIZAÇÃO: Criar índices de performance ANTES da verificação
+        logger.info("[PIPELINE.VERIFICADOR.INDICES] Criando índices de performance para verificação")
+        try:
+            #criar_indices_performance("omie.db")
+            logger.info("[PIPELINE.VERIFICADOR.INDICES] ✓ Índices criados/verificados com sucesso")
+        except Exception as idx_error:
+            logger.warning(f"[PIPELINE.VERIFICADOR.INDICES] Erro ao criar índices: {idx_error}")
+        
+        # 2. Log de contexto antes da verificação (usando índice otimizado)
+        try:
+            with conexao_otimizada("omie.db") as conn:
+                cursor = conn.cursor()
+                
+                # Usa o índice idx_status_download para consulta rápida
+                cursor.execute("SELECT COUNT(*) FROM notas WHERE xml_baixado = 1")
+                total_baixados = cursor.fetchone()[0]
+                
+                cursor.execute("SELECT COUNT(*) FROM notas WHERE xml_baixado = 0")
+                total_pendentes = cursor.fetchone()[0]
+                
+                logger.info(f"[PIPELINE.VERIFICADOR.CONTEXTO] {total_baixados:,} XMLs marcados como baixados")
+                logger.info(f"[PIPELINE.VERIFICADOR.CONTEXTO] {total_pendentes:,} XMLs pendentes para verificacao")
+                
+                # Log adicional de performance
+                if total_pendentes > 0:
+                    logger.info(f"[PIPELINE.VERIFICADOR.PERFORMANCE] Verificacao otimizada com índices para {total_pendentes:,} registros")
+                
+        except Exception as ctx_error:
+            logger.debug(f"[PIPELINE.VERIFICADOR.CONTEXTO] Erro ao obter contexto: {ctx_error}")
+        
+        # 3. Import local para evitar dependência circular
+        from src import verificador_xmls
+        
+        # 4. Execução do verificador (agora com índices otimizados)
+        logger.info("[PIPELINE.VERIFICADOR.INICIO] Executando verificacao detalhada com índices otimizados")
+        verificador_xmls.verificar()
+        
+        t1 = time.time()
+        duracao = t1 - t0
+        logger.info(f"[PIPELINE.VERIFICADOR.SUCESSO] Verificacao finalizada - Tempo total: {formatar_tempo_total(duracao)} ({duracao:.2f}s)")
+        
+        # 5. CACHE: Relatório final de estatísticas de cache
+        try:
+            stats_finais = obter_estatisticas_cache()
+            if stats_finais['directories_cached'] > 0:
+                logger.info("[PIPELINE.VERIFICADOR.CACHE] Estatísticas finais do cache:")
+                logger.info(f"   • Diretórios indexados: {stats_finais['directories_indexed']}")
+                logger.info(f"   • Arquivos em cache: {stats_finais['total_files_cached']}")
+                logger.info(f"   • Cache hits: {stats_finais['cache_hits']}")
+                logger.info(f"   • Cache misses: {stats_finais['cache_misses']}")
+                logger.info(f"   • Hit rate: {stats_finais['hit_rate_percent']:.1f}%")
+                
+                # Análise de performance do cache
+                if stats_finais['cache_hits'] > 0:
+                    logger.info(f"   ✅ Cache FUNCIONOU - {stats_finais['cache_hits']} acessos otimizados")
+                    performance_gain = "significativo" if stats_finais['hit_rate_percent'] > 50 else "moderado"
+                    logger.info(f"   🚀 Ganho de performance: {performance_gain}")
+                else:
+                    logger.info("   ℹ️  Cache não foi utilizado nesta execução")
+            else:
+                logger.debug("[PIPELINE.VERIFICADOR.CACHE] Nenhum cache utilizado nesta execução")
+                
+        except Exception as stats_error:
+            logger.debug(f"[PIPELINE.VERIFICADOR.CACHE] Erro ao obter estatísticas: {stats_error}")
+        
+        # 6. Log de resultados pós-verificação (usando índices)
+        try:
+            with conexao_otimizada("omie.db") as conn:
+                cursor = conn.cursor()
+                
+                # Consultas otimizadas com índices
+                cursor.execute("SELECT COUNT(*) FROM notas WHERE xml_vazio = 1")
+                vazios = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM notas WHERE xml_baixado = 1")
+                total_baixados_final = cursor.fetchone()[0]
+                
+                logger.info(f"[PIPELINE.VERIFICADOR.RESULTADO] XMLs baixados após verificação: {total_baixados_final:,}")
+                
+                if vazios > 0:
+                    logger.warning(f"[PIPELINE.VERIFICADOR.RESULTADO] {vazios:,} XMLs vazios detectados")
+                else:
+                    logger.info("[PIPELINE.VERIFICADOR.RESULTADO] Todos os XMLs estao validos")
+                    
+                # Calcula velocidade de processamento
+                if duracao > 0:
+                    velocidade = total_pendentes / duracao if 'total_pendentes' in locals() else 0
+                    logger.info(f"[PIPELINE.VERIFICADOR.PERFORMANCE] Velocidade: {velocidade:.1f} XMLs/s")
+                    
+        except Exception as result_error:
+            logger.debug(f"[PIPELINE.VERIFICADOR.RESULTADO] Erro ao obter resultados: {result_error}")
+        
+    except Exception as e:
+        logger.exception(f"[PIPELINE.VERIFICADOR.ERRO] Erro durante verificacao de XMLs: {e}")
+        logger.error("[PIPELINE.VERIFICADOR.CONTINUACAO] Pipeline continuara sem verificacao")
+
 def executar_relatorio_arquivos_vazios(pasta: str) -> None:
     """
     Gera relatorio detalhado de arquivos vazios ou corrompidos.
@@ -712,27 +930,31 @@ def executar_relatorio_arquivos_vazios(pasta: str) -> None:
             logger.warning(f"[PIPELINE.RELATORIO.VERIFICACAO] Diretorio nao encontrado: {pasta}")
             return
         
-        # Conta arquivos rapidamente para estimar tempo
+        # Conta arquivos e subdiretórios sem usar len/sum
         try:
-            logger.info("[PIPELINE.RELATORIO.CONTAGEM] Estimando quantidade de arquivos")
-            arquivo_count = sum(1 for _ in pasta_obj.rglob("*") if _.is_file())
-            xml_count = sum(1 for _ in pasta_obj.rglob("*.xml"))
-            
+            logger.info("[PIPELINE.RELATORIO.CONTAGEM] Estimando quantidade de arquivos e subdiretórios")
+            arquivo_count = 0
+            xml_count = 0
+            subdir_count = 0
+            for root, dirs, files in os.walk(pasta_obj):
+                subdir_count += len(dirs)
+                for file in files:
+                    arquivo_count += 1
+                    if file.lower().endswith('.xml'):
+                        xml_count += 1
             logger.info(f"[PIPELINE.RELATORIO.METRICAS] Total de arquivos: {arquivo_count:,}")
             logger.info(f"[PIPELINE.RELATORIO.METRICAS] Arquivos XML: {xml_count:,}")
-            
+            logger.info(f"[PIPELINE.RELATORIO.METRICAS] Subdiretórios: {subdir_count:,}")
             # Estima tempo baseado na quantidade
             tempo_estimado = arquivo_count / 10000  # ~10k arquivos por minuto
             logger.info(f"[PIPELINE.RELATORIO.ESTIMATIVA] Tempo estimado: {tempo_estimado:.1f} minutos")
-            
             # Se ha muitos arquivos, usa analise rapida
             if arquivo_count > 500000:  # Mais de 500k arquivos
                 logger.warning(f"[PIPELINE.RELATORIO.OTIMIZACAO] Muitos arquivos ({arquivo_count:,}). Usando analise rapida")
                 _executar_relatorio_rapido(pasta)
                 return
-                
         except Exception as e:
-            logger.warning(f"[PIPELINE.RELATORIO.CONTAGEM] Erro ao contar arquivos: {e}")
+            logger.warning(f"[PIPELINE.RELATORIO.CONTAGEM] Erro ao contar arquivos/subdiretórios: {e}")
         
         # Timeout handler
         def timeout_handler(signum, frame):
@@ -875,170 +1097,6 @@ def _executar_relatorio_rapido(pasta: str) -> None:
         logger.error("[PIPELINE.RELATORIO.RAPIDO.CONTINUACAO] Pipeline continuara sem relatorio")
 
 
-def executar_atualizacao_anomesdia() -> None:
-    """
-    Executa atualização da indexação temporal (anomesdia) no banco de dados.
-    
-    FUNCIONALIDADES:
-    - Atualiza campo anomesdia para registros sem indexação temporal
-    - Usa função otimizada do módulo utils
-    - Logging detalhado de progresso e resultados
-    - Tratamento robusto de erros
-    
-    Processo:
-    1. Identifica registros sem campo anomesdia preenchido
-    2. Extrai data de emissão (dEmi) e converte para formato numérico
-    3. Atualiza registros em lotes otimizados
-    4. Gera estatísticas de progresso
-    
-    Benefícios:
-    - Consultas temporais mais rápidas (índice numérico)
-    - Views otimizadas funcionam corretamente
-    - Relatórios por período mais eficientes
-    - Análises temporais otimizadas
-    
-    Returns:
-        None
-        
-    Raises:
-        Exception: Erros durante atualização são logados e não propagados
-    """
-    try:
-        logger.info("[PIPELINE.ANOMESDIA] Iniciando atualização do campo anomesdia ...")
-        t0 = time.time()
-        
-        # Importa função do módulo utils
-        from src.utils import atualizar_anomesdia
-        
-        # Executa atualização com logging detalhado
-        logger.info("[PIPELINE.ANOMESDIA] Processando registros sem campo anomesdia...")
-        registros_atualizados = atualizar_anomesdia(db_path="omie.db")
-        
-        t1 = time.time()
-        duracao = t1 - t0
-        
-        # Log de resultados
-        if registros_atualizados > 0:
-            velocidade = registros_atualizados / duracao if duracao > 0 else 0
-            logger.info(f"[PIPELINE.ANOMESDIA.SUCESSO] {registros_atualizados:,} registros indexados temporalmente")
-            logger.info(f"[PIPELINE.ANOMESDIA.PERFORMANCE] Tempo: {formatar_tempo_total(duracao)} ({duracao:.2f}s), Velocidade: {velocidade:.0f} reg/s")
-        else:
-            logger.info("[PIPELINE.ANOMESDIA.NENHUM] Todos os registros já possuem indexação temporal")
-            logger.info(f"[PIPELINE.ANOMESDIA.PERFORMANCE] Tempo total: {duracao:.2f}s, nenhum registro atualizado")
-        
-    except Exception as e:
-        logger.exception(f"[PIPELINE.ANOMESDIA.ERRO] Erro durante atualização da indexação temporal: {e}")
-        logger.warning("[PIPELINE.ANOMESDIA.CONTINUACAO] Pipeline continuará sem indexação temporal completa")
-
-
-def executar_verificador_xmls() -> None:
-    """
-    Executa verificacao de integridade dos arquivos XML baixados.
-    
-    OTIMIZAÇÕES IMPLEMENTADAS:
-    - Cria índices de performance antes da execução
-    - Usa conexão otimizada com PRAGMAs
-    - Aplica índices específicos para consulta xml_baixado = 0
-    - Logging detalhado de performance
-    
-    Verificacões realizadas:
-    1. Validacoo de estrutura XML (well-formed)
-    2. verificacao de encoding correto
-    3. Validacoo de campos obrigatorios
-    4. Checagem de consistência de dados
-    5. atualizacao de status no banco de dados
-    
-    Caracteristicas:
-    - Processamento paralelo para performance
-    - Validacoo XML rigorosa
-    - Deteccoo de arquivos corrompidos
-    - Marcacoo automatica de reprocessamento
-    - Estatisticas detalhadas de validacoo
-    - Índices otimizados para consultas rápidas
-    
-    Returns:
-        None
-        
-    Raises:
-        Exception: Erros durante verificacao soo logados e noo propagados
-    """
-    try:
-        logger.info("[PIPELINE.VERIFICADOR] Iniciando verificacao de integridade dos XMLs")
-        t0 = time.time()
-        
-        # 1. OTIMIZAÇÃO: Criar índices de performance ANTES da verificação
-        logger.info("[PIPELINE.VERIFICADOR.INDICES] Criando índices de performance para verificação")
-        try:
-            #criar_indices_performance("omie.db")
-            logger.info("[PIPELINE.VERIFICADOR.INDICES] ✓ Índices criados/verificados com sucesso")
-        except Exception as idx_error:
-            logger.warning(f"[PIPELINE.VERIFICADOR.INDICES] Erro ao criar índices: {idx_error}")
-        
-        # 2. Log de contexto antes da verificação (usando índice otimizado)
-        try:
-            with conexao_otimizada("omie.db") as conn:
-                cursor = conn.cursor()
-                
-                # Usa o índice idx_status_download para consulta rápida
-                cursor.execute("SELECT COUNT(*) FROM notas WHERE xml_baixado = 1")
-                total_baixados = cursor.fetchone()[0]
-                
-                cursor.execute("SELECT COUNT(*) FROM notas WHERE xml_baixado = 0")
-                total_pendentes = cursor.fetchone()[0]
-                
-                logger.info(f"[PIPELINE.VERIFICADOR.CONTEXTO] {total_baixados:,} XMLs marcados como baixados")
-                logger.info(f"[PIPELINE.VERIFICADOR.CONTEXTO] {total_pendentes:,} XMLs pendentes para verificacao")
-                
-                # Log adicional de performance
-                if total_pendentes > 0:
-                    logger.info(f"[PIPELINE.VERIFICADOR.PERFORMANCE] Verificacao otimizada com índices para {total_pendentes:,} registros")
-                
-        except Exception as ctx_error:
-            logger.debug(f"[PIPELINE.VERIFICADOR.CONTEXTO] Erro ao obter contexto: {ctx_error}")
-        
-        # 3. Import local para evitar dependência circular
-        from src import verificador_xmls
-        
-        # 4. Execução do verificador (agora com índices otimizados)
-        logger.info("[PIPELINE.VERIFICADOR.INICIO] Executando verificacao detalhada com índices otimizados")
-        verificador_xmls.verificar()
-        
-        t1 = time.time()
-        duracao = t1 - t0
-        logger.info(f"[PIPELINE.VERIFICADOR.SUCESSO] Verificacao finalizada - Tempo total: {formatar_tempo_total(duracao)} ({duracao:.2f}s)")
-        
-        # 5. Log de resultados pós-verificação (usando índices)
-        try:
-            with conexao_otimizada("omie.db") as conn:
-                cursor = conn.cursor()
-                
-                # Consultas otimizadas com índices
-                cursor.execute("SELECT COUNT(*) FROM notas WHERE xml_vazio = 1")
-                vazios = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM notas WHERE xml_baixado = 1")
-                total_baixados_final = cursor.fetchone()[0]
-                
-                logger.info(f"[PIPELINE.VERIFICADOR.RESULTADO] XMLs baixados após verificação: {total_baixados_final:,}")
-                
-                if vazios > 0:
-                    logger.warning(f"[PIPELINE.VERIFICADOR.RESULTADO] {vazios:,} XMLs vazios detectados")
-                else:
-                    logger.info("[PIPELINE.VERIFICADOR.RESULTADO] Todos os XMLs estao validos")
-                    
-                # Calcula velocidade de processamento
-                if duracao > 0:
-                    velocidade = total_pendentes / duracao if 'total_pendentes' in locals() else 0
-                    logger.info(f"[PIPELINE.VERIFICADOR.PERFORMANCE] Velocidade: {velocidade:.1f} XMLs/s")
-                    
-        except Exception as result_error:
-            logger.debug(f"[PIPELINE.VERIFICADOR.RESULTADO] Erro ao obter resultados: {result_error}")
-        
-    except Exception as e:
-        logger.exception(f"[PIPELINE.VERIFICADOR.ERRO] Erro durante verificacao de XMLs: {e}")
-        logger.error("[PIPELINE.VERIFICADOR.CONTINUACAO] Pipeline continuara sem verificacao")
-
-
-
 # =============================================================================
 # Estruturas de dados e context managers otimizados
 # =============================================================================
@@ -1130,15 +1188,35 @@ def main() -> None:
             logger.info("INICIANDO PIPELINE DO EXTRATOR OMIE V3 SIMPLIFICADO")
             logger.info("=" * 80)
             
-            # Log de informações do ambiente
-            logger.info(f"[AMBIENTE] Executável Python: {sys.executable}")
-            logger.info(f"[AMBIENTE] Argumentos: {sys.argv}")
-            logger.info(f"[AMBIENTE] Diretório de trabalho: {os.getcwd()}")
+            # CACHE: Inicialização e limpeza do sistema de cache
+            logger.info("[MAIN.CACHE] Inicializando sistema de cache global...")
+            try:
+                # Obtém estatísticas iniciais
+                stats_iniciais = obter_estatisticas_cache()
+                logger.info(f"[MAIN.CACHE] Estado inicial: {stats_iniciais['directories_cached']} dirs em cache")
+                
+                # Limpa cache para execução limpa (recomendado no início)
+                cache_limpo = limpar_cache_indexacao_xmls()
+                if cache_limpo > 0:
+                    logger.info(f"[MAIN.CACHE] Cache inicial limpo: {cache_limpo} entradas removidas")
+                else:
+                    logger.info("[MAIN.CACHE] Cache já estava limpo")
+                    
+                logger.info("[MAIN.CACHE] ✅ Sistema de cache inicializado e pronto")
+                
+            except Exception as cache_error:
+                logger.warning(f"[MAIN.CACHE] Erro na inicialização do cache: {cache_error}")
+                logger.info("[MAIN.CACHE] Pipeline continuará sem otimizações de cache")
             
+            # Log de informações do ambiente
+            logger.info(f"[MAIN.AMBIENTE] Executável Python: {sys.executable}")
+            logger.info(f"[MAIN.AMBIENTE] Argumentos: {sys.argv}")
+            logger.info(f"[MAIN.AMBIENTE] Diretório de trabalho: {os.getcwd()}")
+            logger.info(f"[MAIN.AMBIENTE] Versão do Python: {sys.version}")
             # Carregamento das configurações
             config = carregar_configuracoes()
             log_configuracoes(config, logger)
-            resultado_dir = config['resultado_dir']
+            resultado_dir = config.get('resultado_dir', 'resultado')
             db_path = "omie.db"  # Caminho do banco SQLite
         except Exception as e:
             logger.exception(f"[FASE 1] Erro ao carregar configurações: {e}")
@@ -1154,8 +1232,9 @@ def main() -> None:
             # Verifica se os arquivos marcados como xml_baixado = 0 realmente não foram baixados,
             # atualizando o status quando encontrados nos diretórios locais.
 
-            atualizar_campos_registros_pendentes(db_path, resultado_dir) 
-            
+            logger.info("[MAIN.ATUALIZACAO_PENDENTES] Atualizando campos essenciais dos registros pendentes...")
+            atualizar_campos_registros_pendentes(db_path, resultado_dir)
+            logger.info("[MAIN.ATUALIZACAO_PENDENTES] Atualização concluída com sucesso")
             t1 = time.time()
             logger.info(f"[FASE 2] Atualização concluída. Tempo: {formatar_tempo_total(t1-t0)} ({t1-t0:.2f}s)")
             
@@ -1169,14 +1248,16 @@ def main() -> None:
         # =============================================================================
         # Fase 2.5: Pipeline principal (download de XMLs)
         # =============================================================================
-        logger.info("[FASE 2.5] - Executando pipeline principal...")
+        logger.info("[FASE 2.5] - Executando pipeline download de XMLs...")
 
         try:
             # Atualiza datas de consulta antes da execução
             logger.info("[FASE 2.5] - Atualizando datas de consulta...")
             try:
+                logger.info("[MAIN.ATUALIZADOR_DATAS] Atualizando datas de consulta...")
                 executar_atualizador_datas_query()
-                logger.info("[FASE 2.5] - Datas de consulta atualizadas")
+                logger.info("[MAIN.ATUALIZADOR_DATAS] Datas de consulta atualizadas")
+                logger.info("[FASE 2.5] - ✓ Datas atualizadas com sucesso")
             except Exception as e:
                 logger.error(f"[FASE 2.5] - Erro ao atualizar datas: {e}")
                 logger.warning("[FASE 2.5] - Continuando com datas atuais")
@@ -1184,9 +1265,11 @@ def main() -> None:
             try:
                 # Executa o extrator adaptativo
                 logger.info("[FASE 3] - Iniciando extração de dados...")
+                logger.info("[MAIN.EXECUTAR_ASYNC_CONFIG] Executando extrator adaptativo com configuração...")
                 t2 = time.time()
                 _executar_async_com_config(config)
                 t3 = time.time()
+                logger.info("[MAIN.EXECUTAR_ASYNC_CONFIG] Extração adaptativa concluída")
                 logger.info("[FASE 3] - Extração de dados concluída com sucesso")
                 logger.info(f"[FASE 3] - Tempo total de extração: {formatar_tempo_total(t3-t2)} ({t3-t2:.2f}s)")
             except Exception as e:  
@@ -1198,8 +1281,10 @@ def main() -> None:
             # =============================================================================
             logger.info("[FASE 4] - Verificando integridade dos arquivos...")
             try:
+                logger.info("[MAIN.VERIFICADOR_XMLS] Iniciando verificação de integridade dos XMLs baixados...")
                 executar_verificador_xmls()
-                logger.info("[FASE 4] - Verificação de integridade concluída")
+                logger.info("[MAIN.VERIFICADOR_XMLS] Verificação de integridade concluída")
+                logger.info("[FASE 4] - Verificação de integridade concluída com sucesso")
             except Exception as e:
                 logger.exception(f"[FASE 4] - Erro durante verificação: {e}")
                 logger.warning("[FASE 4] - Pipeline continuará sem verificação completa")
@@ -1209,8 +1294,10 @@ def main() -> None:
             # =============================================================================
             logger.info("[FASE 5] - Compactando resultados...")
             try:
+                logger.info("[MAIN.COMPACTADOR_RESULTADO] Iniciando compactação dos resultados...")
                 executar_compactador_resultado()
-                logger.info("[FASE 5] - Compactação concluída com sucesso")
+                logger.info("[MAIN.COMPACTADOR_RESULTADO] Compactação concluída com sucesso")
+                logger.info("[FASE 5] - ✓ Compactação concluída com sucesso")
             except Exception as e:
                 logger.exception(f"[FASE 5] - Erro durante compactação: {e}")
                 logger.warning("[FASE 5] - Pipeline continuará sem compactação")
@@ -1220,8 +1307,10 @@ def main() -> None:
             # =============================================================================
             logger.info("[FASE 6] - Atualizando caminhos no banco de dados...")
             try:
+                logger.info("[MAIN.ATUALIZACAO_CAMINHOS] Iniciando atualização de caminhos...")
                 executar_atualizacao_caminhos()
-                logger.info("[FASE 6] - Caminhos atualizados com sucesso")
+                logger.info("[MAIN.ATUALIZACAO_CAMINHOS] Atualização concluída com sucesso")
+                logger.info("[FASE 6] - ✓ Atualização de caminhos concluída com sucesso")
             except Exception as e:
                 logger.exception(f"[FASE 6] - Erro durante atualização de caminhos: {e}")
                 logger.warning("[FASE 6] - Pipeline continuará sem atualização de caminhos")
@@ -1233,7 +1322,9 @@ def main() -> None:
             # =============================================================================
             logger.info("[FASE 7] - Enviando para OneDrive...")
             try:
+                logger.info("[MAIN.UPLOAD_ONEDRIVE] Iniciando upload dos resultados compactados para OneDrive...")
                 executar_upload_resultado_onedrive()
+                logger.info("[MAIN.UPLOAD_ONEDRIVE] Upload concluído com sucesso")
                 logger.info("[FASE 7] - Upload concluído com sucesso")
             except Exception as e:
                 logger.exception(f"[FASE 7] - Erro durante upload: {e}")
@@ -1244,7 +1335,9 @@ def main() -> None:
             # =============================================================================
             logger.info("[FASE 8] - Gerando relatórios finais...")
             try:
+                logger.info("[MAIN.GERADOR_RELATORIOS] Iniciando geração de relatórios...")
                 executar_relatorio_arquivos_vazios(resultado_dir)
+                logger.info("[MAIN.GERADOR_RELATORIOS] Geração de relatórios concluída com sucesso")
                 logger.info("[FASE 8] - Relatórios gerados com sucesso")
             except Exception as e:
                 logger.exception(f"[FASE 8] - Erro durante geração de relatórios: {e}")
@@ -1262,16 +1355,53 @@ def main() -> None:
         # =============================================================================
         logger.info("=" * 80)
         logger.info("PIPELINE CONCLUÍDO COM SUCESSO")
+        
+        # =============================================================================
+        # CACHE: Relatório final de performance do cache
+        # =============================================================================
+        logger.info("RELATÓRIO FINAL DE PERFORMANCE DO CACHE:")
+        try:
+            stats_finais = obter_estatisticas_cache()
+            
+            if stats_finais['directories_cached'] > 0:
+                logger.info("[CACHE.FINAL] ✅ Sistema de cache foi utilizado com sucesso!")
+                logger.info(f"[CACHE.FINAL]   • Diretórios indexados: {stats_finais['directories_indexed']}")
+                logger.info(f"[CACHE.FINAL]   • Arquivos em cache: {stats_finais['total_files_cached']:,}")
+                logger.info(f"[CACHE.FINAL]   • Cache hits: {stats_finais['cache_hits']}")
+                logger.info(f"[CACHE.FINAL]   • Cache misses: {stats_finais['cache_misses']}")
+                logger.info(f"[CACHE.FINAL]   • Hit rate: {stats_finais['hit_rate_percent']:.1f}%")
+                
+                # Análise final de performance
+                total_requests = stats_finais['cache_hits'] + stats_finais['cache_misses']
+                if total_requests > 0:
+                    efficiency = "EXCELENTE" if stats_finais['hit_rate_percent'] > 80 else \
+                               "BOA" if stats_finais['hit_rate_percent'] > 50 else \
+                               "REGULAR" if stats_finais['hit_rate_percent'] > 20 else "BAIXA"
+                    
+                    logger.info(f"[CACHE.FINAL] 🚀 Eficiência do cache: {efficiency}")
+                    
+                    if stats_finais['hit_rate_percent'] > 50:
+                        logger.info("[CACHE.FINAL] 💡 Cache proporcionou ganho significativo de performance!")
+                    else:
+                        logger.info("[CACHE.FINAL] 💡 Cache teve uso limitado - considere ajustes")
+                else:
+                    logger.info("[CACHE.FINAL] ℹ️  Cache inicializado mas não utilizado nesta execução")
+            else:
+                logger.info("[CACHE.FINAL] ℹ️  Cache não foi utilizado nesta execução")
+                
+        except Exception as cache_final_error:
+            logger.warning(f"[CACHE.FINAL] Erro ao obter estatísticas finais: {cache_final_error}")
 
         # =============================================================================
         # Métricas de banco de dados otimizadas
         # =============================================================================
         logger.info("MÉTRICAS COMPLETAS DO BANCO DE DADOS:")
         try:
+            logger.info("[MAIN.METRICAS_COMPLETAS] Iniciando exibição de métricas completas...")
             # Import local para evitar dependência circular
             from src.utils import exibir_metricas_completas
             exibir_metricas_completas("omie.db")
-            
+            logger.info("[MAIN.METRICAS_COMPLETAS] Exibição de métricas completas concluída com sucesso")
         except Exception as e:
             logger.error(f"[MÉTRICAS] Erro ao obter métricas completas: {e}")
             

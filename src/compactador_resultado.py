@@ -53,7 +53,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List, Dict, Tuple, Set
 import logging
 
-from utils import criar_lockfile, listar_arquivos_xml_multithreading
+from utils import criar_lockfile, listar_xmls_hibrido
 from upload_onedrive import fazer_upload_lote
 
 # =============================================================================
@@ -215,7 +215,7 @@ def compactar_pasta_otimizada(origem: Path, limite: int = LIMITE_POR_PASTA) -> L
             return []
         
         # Lista arquivos XML
-        xmls = listar_arquivos_xml_multithreading(origem)
+        xmls = listar_xmls_hibrido(origem)
         
         if not xmls:
             logger.info(f"[COMPACTAR] Nenhum XML encontrado em: {origem}")
@@ -605,8 +605,8 @@ def limpar_arquivos_temporarios(diretorio_base: Path = RESULTADO_DIR) -> int:
     Limpa arquivos temporarios deixados por execucões anteriores.
     
     Remove:
-    - Pastas temporarias de compactacoo
-    - Lockfiles orfoos
+    - Pastas temporarias de compactacao
+    - Lockfiles orfãos
     - Arquivos de log antigos
     - Arquivos corrompidos
     

@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from pathlib import Path
 from utils import conexao_otimizada
-from utils import atualizar_status_xml
+from utils import listar_xmls_hibrido
 from utils import normalizar_data
 from utils import CAMPOS_ESSENCIAIS
 from typing import List, Dict
@@ -134,7 +134,7 @@ def atualizar_caminhos_no_banco(db_path: str = 'omie.db', max_workers: int = 4) 
     if resultado_dir.exists():
         logger.info(f"[ATUALIZADOR.CAMINHOS.DESCOBERTA] Iniciando busca otimizada de XMLs com os.scandir + ThreadPoolExecutor...")
         t0 = time.perf_counter()
-        arquivos_xml = listar_arquivos_xml_multithreading(resultado_dir, max_workers=8)
+        arquivos_xml = listar_xmls_hibrido(resultado_dir, max_workers=5)
         t1 = time.perf_counter()
         logger.info(f"[ATUALIZADOR.CAMINHOS.DESCOBERTA] {len(arquivos_xml):,} arquivos XML encontrados em {t1-t0:.2f}s (busca paralela)")
     else:

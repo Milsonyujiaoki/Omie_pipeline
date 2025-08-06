@@ -113,7 +113,7 @@ class OmieClient:
 # Carregamento de configuracões do arquivo INI
 # ==============================================================================
 
-def carregar_configuracoes(path_arquivo: str = 'configuracao.ini') -> dict[str, Any]:
+def carregar_configuracoes_client(path_arquivo: str = 'configuracao.ini') -> dict[str, Any]:
     """
     Carrega e interpreta o arquivo INI com as credenciais e parâmetros da API.
 
@@ -132,7 +132,7 @@ def carregar_configuracoes(path_arquivo: str = 'configuracao.ini') -> dict[str, 
         "start_date": config['query_params']['start_date'],
         "end_date": config['query_params']['end_date'],
         "records_per_page": int(config['query_params']['records_per_page']),
-        "calls_per_second": int(config['api_speed']['calls_per_second']),
+        "calls_per_second": int(config['omie_api']['calls_per_second']),
         "base_url_nf": config.get(
             'omie_api',
             'base_url_nf',

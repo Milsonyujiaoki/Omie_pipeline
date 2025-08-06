@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import os
 import time
+import sys
 
 import pandas as pd
 
@@ -76,28 +77,30 @@ def verificar_arquivo_rapido(filepath: str) -> Optional[dict]:
     """
     try:
         path = Path(filepath)
-        
-        # Verifica se ja foi processado
-        if str(path) in _arquivos_processados:
-            return None
-            
+
+        # Verifica se ja foi processado (lock para acesso seguro)
+        with _file_lock:
+            if str(path) in _arquivos_processados:
+                return None
+
         # Ignora extensões especificas
         if path.suffix.lower() in EXTENSOES_IGNORADAS:
             return None
-            
+
         # Verificação rapida de tamanho
         try:
             stat = path.stat()
         except (OSError, PermissionError):
             return None
-            
+
         size = stat.st_size
         last_modified = datetime.fromtimestamp(stat.st_mtime)
         file_ext = path.suffix.lower()
 
         # Caso 1: Tamanho 0 (verificação mais rapida)
         if size == 0:
-            _arquivos_processados.add(str(path))
+            with _file_lock:
+                _arquivos_processados.add(str(path))
             return {
                 "Path": str(path),
                 "Size (bytes)": size,
@@ -109,7 +112,8 @@ def verificar_arquivo_rapido(filepath: str) -> Optional[dict]:
         # Caso 2: Arquivos pequenos suspeitos (< 100 bytes)
         if size < 100 and file_ext in {'.xml', '.txt', '.json', '.csv'}:
             if is_text_file_empty(path):
-                _arquivos_processados.add(str(path))
+                with _file_lock:
+                    _arquivos_processados.add(str(path))
                 return {
                     "Path": str(path),
                     "Size (bytes)": size,
@@ -119,7 +123,8 @@ def verificar_arquivo_rapido(filepath: str) -> Optional[dict]:
                 }
 
         # Marca como processado
-        _arquivos_processados.add(str(path))
+        with _file_lock:
+            _arquivos_processados.add(str(path))
         return None
 
     except Exception as e:
@@ -402,3 +407,13 @@ def limpar_arquivos_vazios_e_atualizar_banco(arquivos_problematicos: List[Dict])
 
 # Alias para compatibilidade
 salvar_relatorio = salvar_relatorio_otimizado
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s - %(levelname)s - %(message)s',
+                        handlers=[logging.StreamHandler(sys.stdout),
+                                  logging.FileHandler('log/report_arquivos_vazios.log', encoding='utf-8')]
+                        )
+    logger.info("Iniciando verificação de arquivos vazios...")
+    gerar_relatorio("C:\\milson\\extrator_omie_v3\\resultado")
+    logger.info("Verificação concluída.")

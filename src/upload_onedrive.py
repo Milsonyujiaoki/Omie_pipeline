@@ -48,7 +48,7 @@ from dotenv import load_dotenv
 import requests
 from requests import Response
 
-from src.utils import extrair_mes_do_path  # Integracoo com utilitario centralizado
+from utils import extrair_mes_do_path  # Integracoo com utilitario centralizado
 
 # =============================================================================
 # CONFIGURAcoO DE LOGGING

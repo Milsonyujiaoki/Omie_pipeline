@@ -80,13 +80,26 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 from time import monotonic, sleep
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Set
 from xml.etree import ElementTree as ET
+import aiofiles
 
 # =============================================================================
 # CONFIGURAÇÃO DO LOGGER
 # =============================================================================
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# CACHE GLOBAL PARA OTIMIZAÇÃO DE INDEXAÇÃO
+# =============================================================================
+# Cache global para evitar múltiplas indexações do mesmo diretório
+_cache_indexacao_xmls: Dict[str, Dict[str, Tuple[Path, Dict[str, str]]]] = {}
+_cache_lock = Lock()
+_cache_stats = {
+    'hits': 0,
+    'misses': 0,
+    'directories_indexed': 0
+}
 
 # =============================================================================
 # CONSTANTES E CONFIGURAÇÕES GLOBAIS
@@ -480,6 +493,42 @@ def transformar_em_tuple(registro: Dict) -> Tuple:
 # MANIPULAÇÃO DE ARQUIVOS E CAMINHOS
 # =============================================================================
 
+def criar_lockfile(pasta: Path) -> Path:
+    """
+    Cria arquivo de lock para controle de acesso exclusivo à pasta.
+    
+    Args:
+        pasta: Diretorio onde criar o lockfile
+        
+    Returns:
+        Path do lockfile criado
+        
+    Raises:
+        RuntimeError: Se a pasta ja estiver em uso (lockfile existe)
+        
+    Examples:
+        >>> lockfile = criar_lockfile(Path("resultado/2025/07/17"))
+    """
+    lockfile = pasta / ".processando.lock"
+    
+    if lockfile.exists():
+        raise RuntimeError(f"Pasta em uso por outro processo: {pasta}")
+    
+    try:
+        pasta.mkdir(parents=True, exist_ok=True)
+        lockfile.touch()
+        logger.debug(f"[LOCK] Lockfile criado: {lockfile}")
+        return lockfile
+    except Exception as e:
+        raise RuntimeError(f"Erro ao criar lockfile em {pasta}: {e}")
+
+async def criar_lockfile_async(pasta: Path) -> Path:
+    lockfile = pasta / ".processando.lock"
+    if lockfile.exists():
+        raise RuntimeError("Lockfile já existe")
+    async with aiofiles.open(lockfile, "w") as f:
+        await f.write("locked")
+    return lockfile
 
 def normalizar_chave_nfe(chave: str) -> str:
     """
@@ -599,18 +648,15 @@ def gerar_xml_path_otimizado(
     dEmi: str,
     num_nfe: str,
     base_dir: str = "resultado"
-) -> dict[str, Path]:
+) -> Tuple[Path, Path]:
     """ 
-    Versão otimizada da função gerar_xml_path usando descobrir_todos_xmls.
+    Versão otimizada com cache global para evitar múltiplas indexações.
     
-    Esta versão usa a função descobrir_todos_xmls para busca recursiva eficiente
-    e gerar_nome_arquivo_xml para padronização consistente do nome.
-    
-    Vantagens desta abordagem:
-    - Busca recursiva automática em subpastas
-    - Uso da função centralizada de nomenclatura
-    - Performance otimizada com single scan
-    - Busca por chave alternativa em caso de variação no nome
+    MELHORIAS V2:
+    - Cache global para evitar múltiplas indexações do mesmo diretório
+    - Busca otimizada com índice por chave NFe
+    - Logging otimizado para reduzir spam
+    - Performance melhorada para chamadas paralelas
     
     Args:
         chave: Chave única da NFe (44 caracteres)
@@ -623,11 +669,9 @@ def gerar_xml_path_otimizado(
         
     Raises:
         ValueError: Se dados obrigatórios estiverem ausentes ou inválidos
-        
-    Examples:
-        >>> pasta, arquivo = gerar_xml_path_otimizado("123...", "21/07/2025", "123")
-        >>> # Usa descobrir_todos_xmls para busca eficiente
     """
+    global _cache_indexacao_xmls, _cache_lock
+    
     # Validação de pré-condições
     if not all([chave, dEmi, num_nfe]):
         raise ValueError(f"Dados obrigatórios ausentes: chave={chave}, dEmi={dEmi}, num_nfe={num_nfe}")
@@ -638,63 +682,93 @@ def gerar_xml_path_otimizado(
         if not data_normalizada:
             raise ValueError(f"Data de emissão inválida: '{dEmi}'")
 
-        data_dt = datetime.strptime(data_normalizada, "%d/%m/%Y")  # Formato brasileiro dd/mm/YYYY
-
-        # Geração do nome padrão usando função centralizada
-        nome_arquivo_esperado = gerar_nome_arquivo_xml(chave, data_dt, num_nfe)
+        data_dt = datetime.strptime(data_normalizada, "%d/%m/%Y")
         
         # Construção da pasta do dia
         pasta_dia = Path(base_dir) / data_dt.strftime('%Y') / data_dt.strftime('%m') / data_dt.strftime('%d')
         
-        # Se pasta do dia não existe, retorna caminho para criação
+        # Se pasta não existe, retorna caminho para criação
         if not pasta_dia.exists():
-            caminho_novo = pasta_dia / nome_arquivo_esperado
-            return pasta_dia, caminho_novo
+            nome_arquivo = gerar_nome_arquivo_xml(chave, data_dt, num_nfe)
+            return pasta_dia, pasta_dia / nome_arquivo
         
-        # BUSCA OTIMIZADA: Usa descobrir_todos_xmls para scan recursivo
-        logger.debug(f"[XML_PATH] Buscando XMLs recursivamente em: {pasta_dia}")
-        todos_xmls_do_dia = listar_arquivos_xml_multithreading(pasta_dia)
-        
-        if not todos_xmls_do_dia:
-            # Sem XMLs na pasta, retorna caminho para criação
-            caminho_novo = pasta_dia / nome_arquivo_esperado
-            return pasta_dia, caminho_novo
-        
-        # ESTRATÉGIA DE BUSCA EM MÚLTIPLAS ETAPAS:
+        # CACHE: Verifica se já indexamos este diretório
+        pasta_key = str(pasta_dia.resolve())
         chave_limpa = str(chave).strip()
-        num_nfe_limpo = str(num_nfe).strip()
         
-        # 1. Busca por nome exato (mais precisa)
-        for xml_path in todos_xmls_do_dia:
+        with _cache_lock:
+            if pasta_key not in _cache_indexacao_xmls:
+                # Indexa APENAS este diretório (não recursivo) para evitar travamento
+                logger.debug(f"[XML_PATH_CACHE] Indexando diretório (não-recursivo): {pasta_dia}")
+                
+                # Busca direta apenas no diretório especificado (sem recursão)
+                todos_xmls = []
+                try:
+                    # Verifica se há XMLs direto na pasta
+                    for entry in os.scandir(pasta_dia):
+                        if entry.is_file() and entry.name.lower().endswith('.xml'):
+                            todos_xmls.append(Path(entry.path))
+                    
+                    # Verifica subpastas imediatas (apenas 1 nível) - estrutura típica: dia/pasta_N/
+                    for entry in os.scandir(pasta_dia):
+                        if entry.is_dir():
+                            subdir = Path(entry.path)
+                            try:
+                                for xml_entry in os.scandir(subdir):
+                                    if xml_entry.is_file() and xml_entry.name.lower().endswith('.xml'):
+                                        todos_xmls.append(Path(xml_entry.path))
+                            except (OSError, PermissionError) as e:
+                                logger.debug(f"[XML_PATH_CACHE] Erro ao acessar subpasta {subdir}: {e}")
+                                
+                except (OSError, PermissionError) as e:
+                    logger.warning(f"[XML_PATH_CACHE] Erro ao indexar {pasta_dia}: {e}")
+                    todos_xmls = []
+                
+                # Cria índice local para este diretório
+                xml_index_local = {}
+                for xml_path in todos_xmls:
+                    nome = xml_path.name
+                    # Padrão: numero_dataYYYYMMDD_chave44digitos.xml
+                    match = re.match(r'^(\d+)_([0-9]{8})_([0-9]{44})\.xml$', nome, re.IGNORECASE)
+                    if match:
+                        chave_arquivo = match.group(3)
+                        xml_index_local[chave_arquivo] = (xml_path, {})
+                    else:
+                        # Busca por chave no nome (fallback para nomes não padronizados)
+                        if len(chave_limpa) == 44 and chave_limpa in nome:
+                            xml_index_local[chave_limpa] = (xml_path, {})
+                
+                _cache_indexacao_xmls[pasta_key] = xml_index_local
+                logger.debug(f"[XML_PATH_CACHE] Diretório indexado: {len(xml_index_local)} arquivos")
+        
+        # Busca no cache
+        xml_index_local = _cache_indexacao_xmls[pasta_key]
+        
+        if chave_limpa in xml_index_local:
+            xml_path, _ = xml_index_local[chave_limpa]
+            logger.debug(f"[XML_PATH_CACHE] Cache hit: {xml_path.name}")
+            return pasta_dia, xml_path
+        
+        # Se não encontrou no cache, busca alternativa (nome pode ter variado)
+        nome_arquivo_esperado = gerar_nome_arquivo_xml(chave, data_dt, num_nfe)
+        for chave_cache, (xml_path, _) in xml_index_local.items():
             if xml_path.name == nome_arquivo_esperado:
-                logger.debug(f"[XML_PATH] Encontrado por nome exato: {xml_path}")
-                return xml_path.parent, xml_path
+                logger.debug(f"[XML_PATH_CACHE] Encontrado por nome: {xml_path.name}")
+                return pasta_dia, xml_path
         
-        # 2. Busca por chave NFe no nome (tolerante a variações)
-        for xml_path in todos_xmls_do_dia:
-            if chave_limpa in xml_path.name and num_nfe_limpo in xml_path.name:
-                logger.debug(f"[XML_PATH] Encontrado por chave+número: {xml_path}")
-                return xml_path.parent, xml_path
-        
-        # 3. Busca apenas por chave (fallback)
-        for xml_path in todos_xmls_do_dia:
-            if chave_limpa in xml_path.name:
-                logger.debug(f"[XML_PATH] Encontrado por chave: {xml_path}")
-                return xml_path.parent, xml_path
-        
-        # 4. Nenhum arquivo encontrado - retorna caminho para criação
-        # Escolhe a melhor pasta: direta ou primeira subpasta
-        if any(item.is_dir() for item in pasta_dia.iterdir()):
-            # Se há subpastas, usa a primeira para criação
+        # Se não encontrou, retorna caminho para criação
+        # Escolhe a melhor localização baseada na estrutura existente
+        try:
             subpastas = [item for item in pasta_dia.iterdir() if item.is_dir()]
             if subpastas:
+                # Usa a primeira subpasta se existir
                 primeira_subpasta = sorted(subpastas, key=lambda x: x.name)[0]
-                caminho_novo = primeira_subpasta / nome_arquivo_esperado
-                return primeira_subpasta, caminho_novo
+                return primeira_subpasta, primeira_subpasta / nome_arquivo_esperado
+        except Exception:
+            pass  # Ignora erros de listagem
         
-        # Fallback final: pasta direta
-        caminho_novo = pasta_dia / nome_arquivo_esperado
-        return pasta_dia, caminho_novo
+        # Fallback: pasta direta
+        return pasta_dia, pasta_dia / nome_arquivo_esperado
         
     except Exception as e:
         raise ValueError(f"Erro ao gerar caminho XML otimizado: {e}")
@@ -843,129 +917,6 @@ def gerar_xml_info_dict(
     except Exception as e:
         raise ValueError(f"Erro ao gerar informações do XML: {e}")
 
-
-def criar_mapeamento_completo_com_descobrir_xmls(
-    registros: List[Tuple[str, str, str]], 
-    base_dir: str = "resultado",
-    usar_versao_otimizada: bool = True
-) -> Dict[str, List[Dict[str, str]]]:
-    """
-    Cria mapeamento completo usando descobrir_todos_xmls e gerar_nome_arquivo_xml.
-    
-    Esta função demonstra o uso otimizado das funções descobrir_todos_xmls() 
-    e gerar_nome_arquivo_xml() para criar um mapeamento detalhado dos XMLs.
-    
-    Vantagens desta abordagem:
-    - Performance superior com single scan recursive
-    - Padronização consistente de nomenclatura
-    - Detecção automática de subpastas
-    - Mapeamento por data com múltiplos arquivos por dia
-    
-    Args:
-        registros: Lista de tuplas (chave, dEmi, num_nfe)
-        base_dir: Diretório base para busca
-        usar_versao_otimizada: Se True, usa gerar_xml_path_otimizado()
-        
-    Returns:
-        Dicionário com estrutura:
-        {
-            "2025-07-17": [
-                {
-                    "cChaveNFe": "chave1...",
-                    "nNF": "001", 
-                    "caminho_arquivo": "/caminho/arquivo1.xml",
-                    "nome_padrao": "001_20250717_chave1....xml",
-                    "existe": True
-                },
-                {
-                    "cChaveNFe": "chave2...",
-                    "nNF": "002",
-                    "caminho_arquivo": "/caminho/arquivo2.xml", 
-                    "nome_padrao": "002_20250717_chave2....xml",
-                    "existe": False
-                }
-            ]
-        }
-        
-    Examples:
-        >>> registros = [("chave1", "17/07/2025", "001"), ("chave2", "17/07/2025", "002")]
-        >>> mapeamento = criar_mapeamento_completo_com_descobrir_xmls(registros)
-        >>> # Usa descobrir_todos_xmls() para scan eficiente
-    """
-    mapeamento_por_data = {}
-    total_processados = 0
-    total_com_erro = 0
-    
-    logger.info(f"[MAPEAMENTO] Iniciando mapeamento completo de {len(registros)} registros")
-    
-    for chave, dEmi, num_nfe in registros:
-        try:
-            # Validação de dados
-            if not all([chave, dEmi, num_nfe]):
-                logger.warning(f"[MAPEAMENTO] Dados incompletos: chave={chave}, dEmi={dEmi}, num_nfe={num_nfe}")
-                total_com_erro += 1
-                continue
-            
-            # Normalização da data
-            data_normalizada = normalizar_data(str(dEmi).strip())
-            if not data_normalizada:
-                logger.warning(f"[MAPEAMENTO] Data inválida: '{dEmi}'")
-                total_com_erro += 1
-                continue
-            
-            # Geração do nome padrão usando função centralizada
-            try:
-                data_dt = datetime.strptime(data_normalizada, "%Y-%m-%d")
-                nome_padrao = gerar_nome_arquivo_xml(chave, data_dt, num_nfe)
-            except Exception as e:
-                logger.warning(f"[MAPEAMENTO] Erro ao gerar nome padrão: {e}")
-                total_com_erro += 1
-                continue
-            
-            # Busca do arquivo usando versão otimizada ou original
-            if usar_versao_otimizada:
-                try:
-                    pasta_xml, caminho_xml = gerar_xml_path_otimizado(chave, dEmi, num_nfe, base_dir)
-                except Exception as e:
-                    logger.warning(f"[MAPEAMENTO] Erro na busca otimizada: {e}")
-                    pasta_xml, caminho_xml = gerar_xml_path_otimizado(chave, dEmi, num_nfe, base_dir)
-            else:
-                pasta_xml, caminho_xml = gerar_xml_path_otimizado(chave, dEmi, num_nfe, base_dir)
-            
-            # Criação do registro detalhado
-            registro_detalhado = {
-                "cChaveNFe": str(chave).strip(),
-                "nNF": str(num_nfe).strip(),
-                "caminho_arquivo": str(caminho_xml),
-                "nome_padrao": nome_padrao,
-                "existe": caminho_xml.exists(),
-                "pasta_pai": str(pasta_xml)
-            }
-            
-            # Agrupamento por data
-            if data_normalizada not in mapeamento_por_data:
-                mapeamento_por_data[data_normalizada] = []
-            
-            mapeamento_por_data[data_normalizada].append(registro_detalhado)
-            total_processados += 1
-            
-        except Exception as e:
-            logger.error(f"[MAPEAMENTO] Erro inesperado processando {chave}: {e}")
-            total_com_erro += 1
-    
-    # Estatísticas finais
-    total_datas = len(mapeamento_por_data)
-    total_arquivos_existentes = sum(
-        1 for data_registros in mapeamento_por_data.values()
-        for registro in data_registros
-        if registro["existe"]
-    )
-    
-    logger.info(f"[MAPEAMENTO] Concluído: {total_processados} sucessos, {total_com_erro} erros")
-    logger.info(f"[MAPEAMENTO] {total_datas} datas processadas, {total_arquivos_existentes} arquivos existentes")
-    
-    return mapeamento_por_data
-
 def extrair_mes_do_path(caminho: Path) -> str:
     """
     Extrai identificador de mês (YYYY-MM) da estrutura hierarquica de pastas.
@@ -1008,35 +959,6 @@ def extrair_mes_do_path(caminho: Path) -> str:
     except Exception as e:
         logger.warning(f"[PATH] Erro ao extrair mês do caminho {caminho}: {e}")
         return "outros"
-
-def criar_lockfile(pasta: Path) -> Path:
-    """
-    Cria arquivo de lock para controle de acesso exclusivo à pasta.
-    
-    Args:
-        pasta: Diretorio onde criar o lockfile
-        
-    Returns:
-        Path do lockfile criado
-        
-    Raises:
-        RuntimeError: Se a pasta ja estiver em uso (lockfile existe)
-        
-    Examples:
-        >>> lockfile = criar_lockfile(Path("resultado/2025/07/17"))
-    """
-    lockfile = pasta / ".processando.lock"
-    
-    if lockfile.exists():
-        raise RuntimeError(f"Pasta em uso por outro processo: {pasta}")
-    
-    try:
-        pasta.mkdir(parents=True, exist_ok=True)
-        lockfile.touch()
-        logger.debug(f"[LOCK] Lockfile criado: {lockfile}")
-        return lockfile
-    except Exception as e:
-        raise RuntimeError(f"Erro ao criar lockfile em {pasta}: {e}")
 
 def listar_arquivos_xml_em(pasta: Path, incluir_subpastas: bool = True) -> List[Path]:
     """
@@ -1086,7 +1008,7 @@ def listar_arquivos_xml_em(pasta: Path, incluir_subpastas: bool = True) -> List[
         logger.warning(f"[LISTAR] Erro ao listar arquivos XML em {pasta}: {e}")
         return []
 
-def listar_arquivos_xml_multithreading(root: Path, max_workers: int = 4) -> list[Path]:
+def listar_arquivos_xml_multithreading(root: Path, max_workers: int = 2) -> list[Path]:
     """
     Busca recursiva eficiente de arquivos XML usando os.scandir e multithreading.
     Percorre toda a árvore a partir de root, retornando todos os arquivos .xml encontrados.
@@ -1108,20 +1030,263 @@ def listar_arquivos_xml_multithreading(root: Path, max_workers: int = 4) -> list
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         while stack:
-            # Processa até 32 subpastas por vez para evitar sobrecarga
-            batch = stack[:32]
-            stack = stack[32:]
+            # Processa até 10 subpastas por vez para evitar sobrecarga
+            batch = stack[:10]
+            stack = stack[10:]
             futures = [executor.submit(_scan_dir, p) for p in batch]
             for f in as_completed(futures):
                 novas = f.result()
                 stack.extend(novas)
     return arquivos_xml
+
+def listar_xmls_os_scandir(root: Path) -> list[Path]:
+        # Percorre recursivamente usando os.scandir para máxima performance.
+        arquivos = []
+        try:
+            for entry in os.scandir(root):
+                if entry.is_file() and entry.name.lower().endswith('.xml'):
+                    arquivos.append(Path(entry.path))
+                elif entry.is_dir():
+                    arquivos.extend(listar_xmls_os_scandir(Path(entry.path)))
+        except Exception as e:
+            logger.warning(f"[INDEXAÇÃO] Erro ao acessar {root}: {e}")
+        return arquivos
+
+def listar_xmls_hibrido(root: Path, max_workers: int = 8, enable_cache: bool = True) -> list[Path]:
+    """
+    Lista arquivos XML usando processamento paralelo otimizado com cache global.
+    
+    MELHORIAS IMPLEMENTADAS V2:
+    - Cache global para evitar múltiplas indexações do mesmo diretório
+    - Deduplicação inteligente de diretórios 
+    - Logging otimizado para reduzir spam
+    - Validação robusta de entrada
+    - Estatísticas de cache para debugging
+    - Controle de nível de log configurável
+    
+    Args:
+        root: Diretório raiz para busca
+        max_workers: Número máximo de workers paralelos
+        enable_cache: Se habilitado, usa cache global (padrão: True)
+        
+    Returns:
+        list[Path]: Lista de arquivos XML encontrados
+        
+    Raises:
+        ValueError: Se root não for um diretório válido
+    """
+    global _cache_indexacao_xmls, _cache_lock, _cache_stats
+    
+    # Validação de entrada
+    if not root.exists() or not root.is_dir():
+        raise ValueError(f"Diretório inválido: {root}")
+    
+    # Cache key baseado no path resolvido
+    root_resolved = root.resolve()
+    cache_key = str(root_resolved)
+    
+    # Verifica cache primeiro se habilitado
+    if enable_cache:
+        with _cache_lock:
+            if cache_key in _cache_indexacao_xmls:
+                _cache_stats['hits'] += 1
+                cached_data = _cache_indexacao_xmls[cache_key]
+                arquivos_xml = [xml_path for xml_path, _ in cached_data.values()]
+                logger.debug(f"[UTILS.LISTAGEM_HIBRIDA.CACHE] Cache hit: {root} - {len(arquivos_xml)} XMLs")
+                return arquivos_xml
+            else:
+                _cache_stats['misses'] += 1
+    
+    logger.debug(f"[UTILS.LISTAGEM_HIBRIDA] Iniciando indexação: {root}")
+    
+    def scan_dir(p: Path) -> tuple[list[Path], int, int]:
+        """
+        Escaneia diretório recursivamente otimizado.
+        
+        Returns:
+            tuple: (arquivos_xml, contador_arquivos, contador_subdirs)
+        """
+        arquivos = []
+        contador_arquivos = 0
+        contador_subdirs = 0
+        
+        try:
+            for entry in os.scandir(p):
+                if entry.is_file() and entry.name.lower().endswith('.xml'):
+                    arquivos.append(Path(entry.path))
+                    contador_arquivos += 1
+                elif entry.is_dir():
+                    # Recursão para subdiretórios
+                    arquivos_rec, arquivos_count, subdirs_count = scan_dir(Path(entry.path))
+                    arquivos.extend(arquivos_rec)
+                    contador_arquivos += arquivos_count
+                    contador_subdirs += subdirs_count
+            
+            contador_subdirs += 1  # Conta o diretório atual
+            
+            # Log otimizado apenas para diretórios com conteúdo significativo
+            if contador_arquivos >= 1000:  # Log apenas para > 1k arquivos
+                logger.info(f"[UTILS.LISTAGEM_HIBRIDA.SCAN_DIR] Arquivos encontrados em {p}: {contador_arquivos}")
+            elif contador_arquivos >= 100:  # Debug para 100-999 arquivos
+                logger.debug(f"[UTILS.LISTAGEM_HIBRIDA.SCAN_DIR] Arquivos encontrados em {p}: {contador_arquivos}")
+                
+        except (OSError, PermissionError) as e:
+            logger.warning(f"[UTILS.LISTAGEM_HIBRIDA.SCAN_DIR] Erro ao acessar {p}: {e}")
+        
+        return arquivos, contador_arquivos, contador_subdirs
+
+    # Processamento principal
+    arquivos_xml = []
+    total_arquivos = 0
+    total_subdirs = 0
+    
+    # Processa arquivos XML no root primeiro
+    try:
+        arquivos_root = [
+            Path(entry.path) 
+            for entry in os.scandir(root) 
+            if entry.is_file() and entry.name.lower().endswith('.xml')
+        ]
+        arquivos_xml.extend(arquivos_root)
+        total_arquivos += len(arquivos_root)
+        
+        if len(arquivos_root) >= 100:  # Log apenas se significativo
+            logger.debug(f"[UTILS.LISTAGEM_HIBRIDA] {len(arquivos_root)} XMLs no diretório root")
+            
+    except (OSError, PermissionError) as e:
+        logger.error(f"[UTILS.LISTAGEM_HIBRIDA] Erro ao acessar root {root}: {e}")
+        return []
+
+    # Lista subdiretórios únicos
+    subdirs = []
+    try:
+        subdirs_set = set()  # Evita duplicatas
+        for entry in os.scandir(root):
+            if entry.is_dir():
+                subdir_path = Path(entry.path).resolve()
+                if subdir_path not in subdirs_set:
+                    subdirs_set.add(subdir_path)
+                    subdirs.append(Path(entry.path))
+        
+        if len(subdirs) > 10:  # Log apenas se muitos subdiretórios
+            logger.debug(f"[UTILS.LISTAGEM_HIBRIDA] {len(subdirs)} subdiretórios únicos para processar")
+        
+    except (OSError, PermissionError) as e:
+        logger.error(f"[UTILS.LISTAGEM_HIBRIDA] Erro ao listar subdiretórios: {e}")
+
+    # Processamento paralelo otimizado
+    if subdirs:
+        effective_workers = min(max_workers, len(subdirs))
+        if len(subdirs) > 5:  # Log apenas se processamento paralelo significativo
+            logger.debug(f"[UTILS.LISTAGEM_HIBRIDA] Usando {effective_workers} workers para {len(subdirs)} subdiretórios")
+        
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            # Submit tasks
+            future_to_subdir = {
+                executor.submit(scan_dir, subdir): subdir 
+                for subdir in subdirs
+            }
+            
+            # Collect results
+            processed_count = 0
+            for future in as_completed(future_to_subdir):
+                try:
+                    arquivos_rec, contador_arquivos, contador_subdirs = future.result()
+                    arquivos_xml.extend(arquivos_rec)
+                    total_arquivos += contador_arquivos
+                    total_subdirs += contador_subdirs
+                    
+                    processed_count += 1
+                    
+                    # Log de progresso reduzido - apenas para processamentos grandes
+                    if len(subdirs) >= 20 and (processed_count % max(1, len(subdirs) // 5) == 0 or processed_count == len(subdirs)):
+                        progress = (processed_count / len(subdirs)) * 100
+                        logger.debug(f"[UTILS.LISTAGEM_HIBRIDA.PROGRESSO] {progress:.1f}% - {processed_count}/{len(subdirs)} processados")
+                        
+                except Exception as e:
+                    subdir = future_to_subdir[future]
+                    logger.error(f"[UTILS.LISTAGEM_HIBRIDA] Erro ao processar {subdir}: {e}")
+
+    # Armazena resultado no cache se habilitado
+    if enable_cache and arquivos_xml:
+        with _cache_lock:
+            # Cria índice por chave NFe para o cache
+            cache_entry = {}
+            for xml_path in arquivos_xml:
+                nome = xml_path.name
+                # Tenta extrair chave NFe do nome do arquivo (padrão: numero_dataYYYYMMDD_chave44.xml)
+                match = re.match(r'^(\d+)_([0-9]{8})_([0-9]{44})\.xml$', nome, re.IGNORECASE)
+                if match:
+                    chave_nfe = match.group(3)
+                    cache_entry[chave_nfe] = (xml_path, {})
+            
+            _cache_indexacao_xmls[cache_key] = cache_entry
+            _cache_stats['directories_indexed'] += 1
+            logger.debug(f"[UTILS.LISTAGEM_HIBRIDA.CACHE] Diretório indexado no cache: {len(cache_entry)} arquivos")
+
+    # Log final apenas para resultados significativos
+    if total_arquivos >= 100 or total_subdirs >= 10:
+        logger.debug(f"[UTILS.LISTAGEM_HIBRIDA] ✓ Concluído: {total_arquivos:,} XMLs em {total_subdirs:,} diretórios")
+    elif total_arquivos > 0:
+        logger.debug(f"[UTILS.LISTAGEM_HIBRIDA] ✓ {total_arquivos} XMLs encontrados")
+    
+    return arquivos_xml
+
+
+def limpar_cache_indexacao_xmls() -> int:
+    """
+    Limpa o cache global de indexação de XMLs.
+    
+    Útil quando:
+    - Arquivos foram movidos/removidos/adicionados
+    - Memória precisa ser liberada
+    - Debuging de problemas de cache
+    
+    Returns:
+        int: Número de entradas removidas do cache
+    """
+    global _cache_indexacao_xmls, _cache_lock, _cache_stats
+    
+    with _cache_lock:
+        entries_removed = len(_cache_indexacao_xmls)
+        _cache_indexacao_xmls.clear()
+        _cache_stats = {
+            'hits': 0,
+            'misses': 0,
+            'directories_indexed': 0
+        }
+        logger.info(f"[CACHE] Cache limpo: {entries_removed} entradas removidas")
+        return entries_removed
+
+
+def obter_estatisticas_cache() -> Dict[str, Any]:
+    """
+    Retorna estatísticas do cache de indexação.
+    
+    Returns:
+        Dict contendo estatísticas de uso do cache
+    """
+    global _cache_indexacao_xmls, _cache_lock, _cache_stats
+    
+    with _cache_lock:
+        total_files_cached = sum(len(entries) for entries in _cache_indexacao_xmls.values())
+        hit_rate = (_cache_stats['hits'] / (_cache_stats['hits'] + _cache_stats['misses'])) * 100 if (_cache_stats['hits'] + _cache_stats['misses']) > 0 else 0
+        
+        return {
+            'directories_cached': len(_cache_indexacao_xmls),
+            'total_files_cached': total_files_cached,
+            'cache_hits': _cache_stats['hits'],
+            'cache_misses': _cache_stats['misses'],
+            'hit_rate_percent': hit_rate,
+            'directories_indexed': _cache_stats['directories_indexed']
+        }
 # =============================================================================
 # CONTROLE DE RATE LIMITING
 # =============================================================================
 
 # Estado global para rate limiting assíncrono
 _ultima_chamada_async = 0.0
+
 
 async def respeitar_limite_requisicoes_async(min_intervalo: float = 0.25) -> None:
     """
@@ -1162,8 +1327,8 @@ def respeitar_limite_requisicoes(min_intervalo: float = 0.25, ultima_chamada: Op
         >>> respeitar_limite_requisicoes(1.0)   # 1 req/s maximo
     """
     if ultima_chamada is None:
-        ultima_chamada = [0.0]
-    
+        ultima_chamada = 0.0
+
     tempo_atual = monotonic()
     tempo_decorrido = tempo_atual - ultima_chamada[0]
     
@@ -1269,7 +1434,7 @@ def criar_schema_base(conn: sqlite3.Connection, table_name: str) -> None:
             cChaveNFe TEXT PRIMARY KEY,
             nIdNF INTEGER,
             nIdPedido INTEGER,
-            
+
             -- Campos de data/hora
             dCan TEXT,
             dEmi TEXT,
@@ -1278,26 +1443,31 @@ def criar_schema_base(conn: sqlite3.Connection, table_name: str) -> None:
             dSaiEnt TEXT,
             hEmi TEXT,
             hSaiEnt TEXT,
-            
+
             -- Campos de identificação
             mod TEXT,
             nNF TEXT,
             serie TEXT,
             tpAmb TEXT,
             tpNF TEXT,
-            
+
             -- Campos do destinatário
             cnpj_cpf TEXT,
             cRazao TEXT,
-            
+
             -- Valores
             vNF REAL,
-            
+
             -- Campos de controle
-            xml_baixado BOOLEAN DEFAULT 0,
             anomesdia INTEGER DEFAULT NULL,
-            caminho_arquivo TEXT DEFAULT NULL,
-            xml_vazio INTEGER DEFAULT 0
+            xml_vazio INTEGER DEFAULT 0,
+            xml_baixado BOOLEAN DEFAULT 0,
+            baixado_novamente INTEGER DEFAULT 0,
+            status TEXT DEFAULT NULL,
+            erro BOOLEAN DEFAULT 0,
+            erro_xml TEXT DEFAULT NULL,
+            mensagem_erro TEXT DEFAULT NULL,
+            caminho_arquivo TEXT DEFAULT NULL
         )
     """
     
@@ -1442,7 +1612,7 @@ def iniciar_db(
             
             # 5. Criação de índices otimizados
             logger.info(f"[DB] Criando índices otimizados...")
-            criar_indices_otimizados(conn, table_name)
+            # criar_indices_otimizados(conn, table_name)
 
             # 7. Commit final
             conn.commit()
@@ -1476,7 +1646,7 @@ def atualizar_status_xml(
     chave: str,
     caminho: Path,
     xml_str: str,
-    rebaixado: bool = False,
+    baixado_novamente: bool = False,
     xml_vazio: int = 0
 ) -> None:
     if not chave:
@@ -1515,80 +1685,6 @@ def atualizar_status_xml(
     except Exception as e:
         logger.exception(f"[ERRO] Falha ao atualizar status do XML para {chave}: {e}")
 
-
-def listar_notas_por_data_numero(db_path: str) -> list[tuple]:
-    """
-    Lista todas as notas ordenadas por data de emissoo e numero da nota fiscal.
-
-    Args:
-        db_path: Caminho do banco SQLite.
-
-    Returns:
-        Lista de tuplas (cChaveNFe, dEmi, nNF, ...outros campos) ordenadas.
-    """
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.execute(
-                "SELECT * FROM notas ORDER BY dEmi ASC, nNF ASC"
-            )
-            resultados = cursor.fetchall()
-        logger.info(f"[DB] {len(resultados)} notas listadas por data/numero.")
-        return resultados
-    except Exception as e:
-        logger.error(f"[DB] Erro ao listar notas por data/numero: {e}")
-        return []
-
-def atualizar_dEmi_registros_pendentes(db_path: str, resultado_dir: str = "resultado") -> None:
-    """
-    Atualiza o campo dEmi dos registros com xml_baixado = 0 e dEmi nulo, buscando a data de emissoo no XML correspondente.
-    Args:
-        db_path: Caminho do banco SQLite.
-        resultado_dir: Diretorio base onde os XMLs estoo salvos.
-    """
-    import xml.etree.ElementTree as ET
-    from pathlib import Path
-
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.execute("SELECT cChaveNFe, nNF FROM notas WHERE xml_baixado = 0 AND (dEmi IS NULL OR dEmi = '')")
-            pendentes = cursor.fetchall()
-        logger.info(f"[DB] Encontrados {len(pendentes)} registros pendentes para atualizacao de dEmi.")
-        atualizados = 0
-        for chave, nNF in pendentes:
-            # Busca arquivo XML pelo padroo de nome
-            xml_path = None
-            for root, dirs, files in os.walk(resultado_dir):
-                for file in files:
-                    if file.endswith(".xml") and chave in file:
-                        xml_path = Path(root) / file
-                        break
-                if xml_path:
-                    break
-            if not xml_path or not xml_path.exists():
-                logger.warning(f"[dEmi] XML noo encontrado para chave {chave}.")
-                continue
-            try:
-                tree = ET.parse(xml_path)
-                root = tree.getroot()
-                # Tenta extrair dEmi (padroo NFe: infNFe/ide/dEmi)
-                dEmi_elem = root.find(".//{*}ide/{*}dEmi")
-                if dEmi_elem is not None and dEmi_elem.text:
-                    dEmi = dEmi_elem.text
-                    # Normaliza para formato ISO
-                    dEmi_norm = normalizar_data(dEmi)
-                    with sqlite3.connect(db_path) as conn:
-                        conn.execute("UPDATE notas SET dEmi = ? WHERE cChaveNFe = ?", (dEmi_norm, chave))
-                        conn.commit()
-                    atualizados += 1
-                    logger.info(f"[dEmi] Atualizado para chave {chave}: {dEmi_norm}")
-                else:
-                    logger.warning(f"[dEmi] Elemento dEmi noo encontrado no XML para chave {chave}.")
-            except Exception as e:
-                logger.warning(f"[dEmi] Falha ao extrair dEmi do XML {xml_path} para chave {chave}: {e}")
-        logger.info(f"[DB] atualizacao concluida. {atualizados} registros tiveram dEmi preenchido.")
-    except Exception as e:
-        logger.error(f"[DB] Erro ao atualizar dEmi dos registros pendentes: {e}")
-
 def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "resultado") -> None:
     """
     Verifica se os arquivos marcados como xml_baixado = 0 realmente não foram baixados,
@@ -1613,20 +1709,22 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
     import re
     from datetime import datetime
     
-    logger.info("[VERIFICAÇÃO] Iniciando verificação otimizada de arquivos baixados...")
+    logger.info("[ATUALIZACAO_PENDENTES] Iniciando verificação otimizada de arquivos baixados...")
     etapa_inicio = time.time()
     
     # 0. Verificação de otimizações disponíveis
+    logger.info("[ATUALIZACAO_PENDENTES.VERIFICACAO_VIEWS_INDICES] Iniciando verificação de otimizações disponíveis no banco...")
     db_otimizacoes = _verificar_views_e_indices_disponiveis(db_path)
     views_disponiveis = sum(1 for k, v in db_otimizacoes.items() if k.startswith('vw_') and v)
     indices_disponiveis = sum(1 for k, v in db_otimizacoes.items() if k.startswith('idx_') and v)
-    logger.info(f"[VERIFICAÇÃO] Otimizações DB: {views_disponiveis} views, {indices_disponiveis} índices específicos")
-    
+    logger.info(f"[ATUALIZACAO_PENDENTES.VERIFICACAO_VIEWS_INDICES] Otimizações DB: {views_disponiveis} views, {indices_disponiveis} índices específicos")
+
     # 1. Indexação dos XMLs com extração de dados dos nomes
+    logger.info(f"[ATUALIZACAO_PENDENTES.INDEXACAO_XML] Iniciando indexação com extração de dados em: {resultado_dir}")
     t0 = time.time()
     xml_index = _indexar_xmls_por_chave_com_dados(resultado_dir)
     t1 = time.time()
-    logger.info(f"[VERIFICAÇÃO] XMLs indexados em {t1-t0:.2f}s ({len(xml_index)} arquivos)")
+    logger.info(f"[ATUALIZACAO_PENDENTES.INDEXACAO_XML] XMLs indexados em {t1-t0:.2f}s ({len(xml_index)} arquivos)")
 
     # 2. Busca otimizada dos registros marcados como não baixados usando views e índices
     t2 = time.time()
@@ -1684,7 +1782,7 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
             pendentes = cursor.fetchall()
     except sqlite3.OperationalError as e:
         # Se índice específico não existir, usa consulta padrão otimizada
-        logger.warning(f"[VERIFICAÇÃO] Índice específico não encontrado, usando consulta padrão: {e}")
+        logger.warning(f"[ATUALIZACAO_PENDENTES] Índice específico não encontrado, usando consulta padrão: {e}")
         try:
             with sqlite3.connect(db_path) as conn:
                 for pragma, value in SQLITE_PRAGMAS.items():
@@ -1698,22 +1796,22 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
                                         THEN CAST(REPLACE(dEmi, '-', '') AS INTEGER)
                                         ELSE NULL END) as anomesdia
                     FROM notas 
-                    WHERE xml_baixado = 0
+                    WHERE 
                     ORDER BY anomesdia DESC NULLS LAST, cChaveNFe
                 """)
                 pendentes = cursor.fetchall()
         except Exception as inner_e:
-            logger.error(f"[VERIFICAÇÃO] Erro na consulta fallback: {inner_e}")
+            logger.error(f"[ATUALIZACAO_PENDENTES] Erro na consulta fallback: {inner_e}")
             return
     except Exception as e:
-        logger.error(f"[VERIFICAÇÃO] Erro ao buscar registros pendentes: {e}")
+        logger.error(f"[ATUALIZACAO_PENDENTES] Erro ao buscar registros: {e}")
         return
         
     t3 = time.time()
-    logger.info(f"[VERIFICAÇÃO] {len(pendentes)} registros marcados como não baixados carregados em {t3-t2:.2f}s")
-    
+    logger.info(f"[ATUALIZACAO_PENDENTES] {len(pendentes)} registros marcados como não baixados carregados em {t3-t2:.2f}s")
+
     if not pendentes:
-        logger.info("[VERIFICAÇÃO] Nenhum registro marcado como não baixado encontrado")
+        logger.info("[ATUALIZACAO_PENDENTES] Nenhum registro marcado como não baixado encontrado")
         return
 
     # 3. Processamento paralelo otimizado
@@ -1768,21 +1866,21 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
                 })
                 
             except OSError as e:
-                logger.warning(f"[VERIFICAÇÃO] Erro ao acessar arquivo {xml_path}: {e}")
+                logger.warning(f"[ATUALIZACAO_PENDENTES.PROCESSAR_LOTE] Erro ao acessar arquivo {xml_path}: {e}")
                 resultados_lote.append({"chave": chave_nfe, "status": "erro_acesso"})
             except Exception as e:
-                logger.warning(f"[VERIFICAÇÃO] Erro inesperado para {chave_nfe}: {e}")
+                logger.warning(f"[ATUALIZACAO_PENDENTES.PROCESSAR_LOTE] Erro inesperado para {chave_nfe}: {e}")
                 resultados_lote.append({"chave": chave_nfe, "status": "erro_geral"})
                 
         return resultados_lote
 
     # Divisão em lotes para processamento paralelo
     t4 = time.time()
-    TAMANHO_LOTE = max(100, len(pendentes) // (os.cpu_count() or 4))
+    TAMANHO_LOTE = max(100000, len(pendentes) // (os.cpu_count() or 4))
     lotes = [pendentes[i:i + TAMANHO_LOTE] for i in range(0, len(pendentes), TAMANHO_LOTE)]
-    
-    logger.info(f"[VERIFICAÇÃO] Processando {len(lotes)} lotes de ~{TAMANHO_LOTE} registros...")
-    
+
+    logger.info(f"[ATUALIZACAO_PENDENTES.PROCESSAR_LOTE] Processando {len(lotes)} lotes de ~{TAMANHO_LOTE} registros...")
+
     # Processamento paralelo por lotes
     todos_resultados = []
     max_workers = min(os.cpu_count() or 4, len(lotes))
@@ -1800,15 +1898,17 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
                 todos_resultados.extend(resultados_lote)
                 
                 # Log de progresso apenas para lotes grandes
-                if len(lotes) > 10 and (lote_idx + 1) % max(1, len(lotes) // 10) == 0:
+                if len(lotes) > 5 and (lote_idx + 1) % max(1, len(lotes) // 10) == 0:
                     progresso = (lote_idx + 1) / len(lotes) * 100
-                    logger.info(f"[VERIFICAÇÃO] Progresso: {progresso:.0f}% ({lote_idx + 1}/{len(lotes)} lotes)")
-                    
+                    logger.info(f"[ATUALIZACAO_PENDENTES.PROCESSAR_LOTE] Progresso: {progresso:.0f}% ({lote_idx + 1}/{len(lotes)} lotes)")
+                else:
+                    logger.debug(f"[ATUALIZACAO_PENDENTES.PROCESSAR_LOTE] Lote {lote_idx + 1}/{len(lotes)} processado com sucesso")
+
             except Exception as e:
-                logger.warning(f"[VERIFICAÇÃO] Erro ao processar lote {lote_idx}: {e}")
+                logger.warning(f"[ATUALIZACAO_PENDENTES.PROCESSAR_LOTE] Erro ao processar lote {lote_idx}: {e}")
     
     t5 = time.time()
-    logger.info(f"[VERIFICAÇÃO] Processamento paralelo concluído em {t5-t4:.2f}s")
+    logger.info(f"[ATUALIZACAO_PENDENTES.PROCESSAR_LOTE] Processamento paralelo concluído em {t5-t4:.2f}s")
 
     # 4. Atualização em batch otimizada
     t6 = time.time()
@@ -1905,18 +2005,18 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
                         """)
                         verificacao = cursor.fetchone()
                         if verificacao:
-                            logger.debug(f"[VERIFICAÇÃO] Verificação pós-update: {verificacao[0]} registros com XML baixado no período atual")
+                            logger.debug(f"[ATUALIZACAO_PENDENTES] Verificação pós-update: {verificacao[0]} registros com XML baixado no período atual")
                 except Exception as ve:
-                    logger.debug(f"[VERIFICAÇÃO] Verificação pós-update opcional falhou: {ve}")
-                
-                logger.info(f"[VERIFICAÇÃO] Batch update executado para {len(dados_update_otimizados)} registros")
-                
+                    logger.debug(f"[ATUALIZACAO_PENDENTES] Verificação pós-update opcional falhou: {ve}")
+
+                logger.info(f"[ATUALIZACAO_PENDENTES] Batch update executado para {len(dados_update_otimizados)} registros")
+
         except Exception as e:
-            logger.error(f"[VERIFICAÇÃO] Erro durante batch update: {e}")
+            logger.error(f"[ATUALIZACAO_PENDENTES] Erro durante batch update: {e}")
             return
     
     t7 = time.time()
-    logger.info(f"[VERIFICAÇÃO] Updates em batch concluídos em {t7-t6:.2f}s")
+    logger.info(f"[ATUALIZACAO_PENDENTES] Updates em batch concluídos em {t7-t6:.2f}s")
 
     # 5. Relatório final detalhado com estatísticas usando views se disponíveis
     tempo_total = t7 - etapa_inicio
@@ -1961,28 +2061,28 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
                 })
                 
     except Exception as e:
-        logger.debug(f"[VERIFICAÇÃO] Erro ao obter estatísticas extras: {e}")
+        logger.debug(f"[ATUALIZACAO_PENDENTES] Erro ao obter estatísticas extras: {e}")
         estatisticas_extras = {}
-    
-    logger.info(f"[VERIFICAÇÃO] === RESULTADO DA VERIFICAÇÃO ===")
-    logger.info(f"[VERIFICAÇÃO] Registros verificados: {len(pendentes)}")
-    logger.info(f"[VERIFICAÇÃO] Arquivos encontrados: {encontrados}")
-    logger.info(f"[VERIFICAÇÃO] Arquivos não encontrados: {nao_encontrados}")
-    logger.info(f"[VERIFICAÇÃO] Arquivos vazios detectados: {arquivos_vazios}")
-    logger.info(f"[VERIFICAÇÃO] Erros: {erros}")
-    logger.info(f"[VERIFICAÇÃO] Tempo total: {tempo_total:.2f}s")
-    logger.info(f"[VERIFICAÇÃO] Taxa: {taxa_processamento:.2f} registros/s")
+
+    logger.info(f"[ATUALIZACAO_PENDENTES] === RESULTADO DA VERIFICAÇÃO ===")
+    logger.info(f"[ATUALIZACAO_PENDENTES] Registros verificados: {len(pendentes)}")
+    logger.info(f"[ATUALIZACAO_PENDENTES] Arquivos encontrados: {encontrados}")
+    logger.info(f"[ATUALIZACAO_PENDENTES] Arquivos não encontrados: {nao_encontrados}")
+    logger.info(f"[ATUALIZACAO_PENDENTES] Arquivos vazios detectados: {arquivos_vazios}")
+    logger.info(f"[ATUALIZACAO_PENDENTES] Erros: {erros}")
+    logger.info(f"[ATUALIZACAO_PENDENTES] Tempo total: {tempo_total:.2f}s")
+    logger.info(f"[ATUALIZACAO_PENDENTES] Taxa: {taxa_processamento:.2f} registros/s")
     
     # Relatório de estatísticas extras se disponíveis
     if estatisticas_extras:
-        logger.info(f"[VERIFICAÇÃO] === ESTATÍSTICAS ADICIONAIS ===")
+        logger.info(f"[ATUALIZACAO_PENDENTES] === ESTATÍSTICAS ADICIONAIS ===")
         if 'total_geral' in estatisticas_extras:
             percentual_baixado = (estatisticas_extras['baixados_geral'] / estatisticas_extras['total_geral'] * 100) if estatisticas_extras['total_geral'] > 0 else 0
-            logger.info(f"[VERIFICAÇÃO] Total geral: {estatisticas_extras['total_geral']} | Baixados: {estatisticas_extras['baixados_geral']} ({percentual_baixado:.1f}%)")
+            logger.info(f"[ATUALIZACAO_PENDENTES] Total geral: {estatisticas_extras['total_geral']} | Baixados: {estatisticas_extras['baixados_geral']} ({percentual_baixado:.1f}%)")
         if 'total_mes_atual' in estatisticas_extras:
-            logger.info(f"[VERIFICAÇÃO] Mês atual: {estatisticas_extras['total_mes_atual']} | Baixados: {estatisticas_extras['baixados_mes_atual']}")
+            logger.info(f"[ATUALIZACAO_PENDENTES] Mês atual: {estatisticas_extras['total_mes_atual']} | Baixados: {estatisticas_extras['baixados_mes_atual']}")
     
-    logger.info(f"[VERIFICAÇÃO] ==========================================")
+    logger.info(f"[ATUALIZACAO_PENDENTES] ==========================================")
 
 
 def _verificar_views_e_indices_disponiveis(db_path: str) -> Dict[str, bool]:
@@ -1995,42 +2095,60 @@ def _verificar_views_e_indices_disponiveis(db_path: str) -> Dict[str, bool]:
     Returns:
         Dict com disponibilidade de views e índices importantes
     """
-    disponibilidade = {
-        'vw_notas_pendentes': False,
-        'vw_notas_mes_atual': False,
-        'vw_notas_recentes': False,
-        'idx_anomesdia_baixado': False,
-        'idx_chave_nfe': False,
-        'idx_baixado': False
-    }
-    
+    views = [
+        'vw_notas_mes_atual',
+        'vw_notas_pendentes',
+        'vw_notas_recentes',
+        'vw_notas_vazias',
+        'vw_resumo_diario',
+    ]
+    indices = [
+        'idx_anomesdia',
+        'idx_anomesdia_baixado',
+        'idx_anomesdia_pendentes',
+        'idx_baixado',
+        'idx_chave',
+        'idx_chave_nfe',
+        'idx_dEmi_baixado',
+        'idx_dEmi_nNF',
+        'idx_data_emissao',
+        'idx_erro',
+        'idx_notas_baixado',
+        'idx_notas_chave',
+        'idx_notas_data',
+        'idx_notas_pendentes',
+        'idx_pendentes',
+        'idx_xml_baixado',
+        'idx_xml_vazio',
+    ]
+    disponibilidade = {v: False for v in views + indices}
+
     try:
         with sqlite3.connect(db_path) as conn:
             # Verifica views
-            cursor = conn.execute("""
-                SELECT name FROM sqlite_master 
-                WHERE type='view' AND name IN ('vw_notas_pendentes', 'vw_notas_mes_atual', 'vw_notas_recentes')
-            """)
+            cursor = conn.execute(
+                f"SELECT name FROM sqlite_master WHERE type='view' AND name IN ({','.join(['?']*len(views))})",
+                views
+            )
             views_existentes = {row[0] for row in cursor.fetchall()}
-            
+
             # Verifica índices
-            cursor = conn.execute("""
-                SELECT name FROM sqlite_master 
-                WHERE type='index' AND name IN ('idx_anomesdia_baixado', 'idx_chave_nfe', 'idx_baixado')
-            """)
+            cursor = conn.execute(
+                f"SELECT name FROM sqlite_master WHERE type='index' AND name IN ({','.join(['?']*len(indices))})",
+                indices
+            )
             indices_existentes = {row[0] for row in cursor.fetchall()}
-            
+
             # Atualiza disponibilidade
-            for item in disponibilidade:
-                if item.startswith('vw_'):
-                    disponibilidade[item] = item in views_existentes
-                elif item.startswith('idx_'):
-                    disponibilidade[item] = item in indices_existentes
-                    
+            for v in views:
+                disponibilidade[v] = v in views_existentes
+            for idx in indices:
+                disponibilidade[idx] = idx in indices_existentes
+
     except Exception as e:
-        logger.warning(f"[DB_OTIM] Erro ao verificar views/índices: {e}")
-    
-    logger.debug(f"[DB_OTIM] Disponibilidade: {disponibilidade}")
+        logger.warning(f"[UTILS.VERIFICACAO_VIEWS_INDICES] Erro ao verificar views/índices: {e}")
+
+    logger.debug(f"[UTILS.VERIFICACAO_VIEWS_INDICES] Disponibilidade: {disponibilidade}")
     return disponibilidade
 
 
@@ -2047,118 +2165,110 @@ def _indexar_xmls_por_chave_com_dados(resultado_dir: str) -> Dict[str, Tuple[Pat
         Dict[chave_nfe, (Path, dados_extraidos)]
     """
     import re
+    import time
     from datetime import datetime
-    
-    # Padrão regex para extrair dados do nome do arquivo
-    # Formato: numero_dataYYYYMMDD_chave44digitos.xml
-    PADRAO_NOME = re.compile(r'^(\d+)_(\d{8})_([0-9]{44})\.xml$', re.IGNORECASE)
-    
+    from pathlib import Path
+    from typing import Optional, Tuple, Dict
+
+    # Regex para nome padrão: numero_dataYYYYMMDD_chave44digitos.xml
+    PADRAO_NOME = re.compile(r'^(\d+)_([0-9]{8})_([0-9]{44})\.xml$', re.IGNORECASE)
+
     def processar_arquivo_xml_com_dados(xml_file: Path) -> Optional[Tuple[str, Path, Dict[str, str]]]:
-        """Processa um arquivo XML extraindo dados do nome."""
         try:
             nome = xml_file.name
             match = PADRAO_NOME.match(nome)
-            
             if match:
                 nnf, data_str, chave_nfe = match.groups()
-                
-                # Converte data YYYYMMDD para formato ISO
                 try:
                     data_obj = datetime.strptime(data_str, '%Y%m%d')
                     demi_iso = data_obj.strftime('%Y-%m-%d')
                 except ValueError:
                     demi_iso = None
-                
                 dados_extraidos = {
                     'nNF': nnf,
                     'dEmi': demi_iso,
                     'cChaveNFe': chave_nfe
                 }
-                
                 return (chave_nfe, xml_file, dados_extraidos)
             else:
-                # Fallback: busca chave de 44 dígitos no nome
                 chaves_encontradas = re.findall(r'[0-9]{44}', nome)
                 if chaves_encontradas:
                     chave_nfe = chaves_encontradas[0]
                     return (chave_nfe, xml_file, {})
-                
-                logger.debug(f"[INDEXAÇÃO] Padrão não reconhecido: {nome}")
+                logger.debug(f"[UTILS.INDEXACAO_XML.PROCESSAR_XML] Padrão não reconhecido: {nome}")
                 return None
-                
         except Exception as e:
-            logger.warning(f"[INDEXAÇÃO] Falha ao processar {xml_file}: {e}")
+            logger.warning(f"[UTILS.INDEXACAO_XML.PROCESSAR_XML] Falha ao processar {xml_file}: {e}")
             return None
-    
-    logger.info(f"[INDEXAÇÃO] Iniciando indexação com extração de dados em: {resultado_dir}")
+
+    logger.info(f"[UTILS.INDEXACAO_XML] Iniciando indexação com extração de dados em: {resultado_dir}")
     inicio = time.time()
-    
-    # Coleta todos os arquivos XML
     resultado_path = Path(resultado_dir)
     if not resultado_path.exists():
-        logger.error(f"[INDEXAÇÃO] Diretório não existe: {resultado_dir}")
+        logger.error(f"[UTILS.INDEXACAO_XML] Diretório não existe: {resultado_dir}")
         return {}
-    
+
+    # Listagem eficiente
     try:
-        todos_xmls = list(resultado_path.rglob("*.xml"))
-    except OSError as e:
-        logger.error(f"[INDEXAÇÃO] Erro ao acessar diretório {resultado_dir}: {e}")
+        logger.debug(f"[UTILS.INDEXACAO_XML.LISTAGEM_HIBRIDA] Listando arquivos XML em: {resultado_dir}")
+        todos_xmls = listar_xmls_hibrido(resultado_path)
+    except Exception as e:
+        logger.error(f"[UTILS.INDEXACAO_XML.LISTAGEM_HIBRIDA] Erro ao acessar diretório {resultado_dir}: {e}")
         return {}
-    
+
     total_arquivos = len(todos_xmls)
     if total_arquivos == 0:
-        logger.warning(f"[INDEXAÇÃO] Nenhum arquivo XML encontrado em: {resultado_dir}")
+        logger.warning(f"[UTILS.INDEXACAO_XML.LISTAGEM_HIBRIDA] Nenhum arquivo XML encontrado em: {resultado_dir}")
         return {}
-    
-    logger.info(f"[INDEXAÇÃO] Encontrados {total_arquivos} arquivos XML para indexar")
-    
-    # Processamento paralelo
+
+    logger.info(f"[UTILS.INDEXACAO_XML.LISTAGEM_HIBRIDA] Encontrados {total_arquivos} arquivos XML para indexar")
+
     xml_index: Dict[str, Tuple[Path, Dict[str, str]]] = {}
     processados = 0
     duplicatas = 0
-    
-    max_workers = min(32, (os.cpu_count() or 1) + 4)
+    max_workers = min(6, (os.cpu_count() or 1) + 4)
+
+    # Processamento em lotes para reduzir overhead
+    BATCH_SIZE = 100000
+    batches = [todos_xmls[i:i+BATCH_SIZE] for i in range(0, total_arquivos, BATCH_SIZE)]
+    last_log = time.time()
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submete todos os arquivos para processamento
-        future_to_xml = {executor.submit(processar_arquivo_xml_com_dados, xml_file): xml_file 
-                        for xml_file in todos_xmls}
-        
-        # Processa resultados conforme completam
-        for future in as_completed(future_to_xml):
-            xml_file = future_to_xml[future]
-            try:
-                resultado = future.result()
-                if resultado:
-                    chave, caminho, dados = resultado
-                    if chave in xml_index:
-                        duplicatas += 1
-                        logger.debug(f"[INDEXAÇÃO] Chave duplicada encontrada: {chave}")
-                    else:
-                        xml_index[chave] = (caminho, dados)
-                    
-                processados += 1
+        for batch in batches:
+            futures = {executor.submit(processar_arquivo_xml_com_dados, xml_file): xml_file for xml_file in batch}
+            for future in as_completed(futures):
+                xml_file = futures[future]
+                try:
+                    resultado = future.result()
+                    if resultado:
+                        chave, caminho, dados = resultado
+                        if chave in xml_index:
+                            duplicatas += 1
+                            logger.debug(f"[UTILS.INDEXACAO_XML.PROCESSAR_XML] Chave duplicada encontrada: {caminho} já existe como {xml_index[chave][0]}")
+                        else:
+                            xml_index[chave] = (caminho, dados)
+                    processados += 1
+                    # Log adaptativo: a cada 50000 arquivos ou 10s
+                    now = time.time()
+                    if processados % 50000 == 0 or (now - last_log) > 10:
+                        tempo_decorrido = now - inicio
+                        taxa = processados / tempo_decorrido if tempo_decorrido > 0 else 0
+                        progresso = processados / total_arquivos * 100
+                        logger.info(f"[UTILS.INDEXACAO_XML.PROCESSAR_XML] Progresso: {progresso:.1f}% - Taxa: {taxa:.0f} arq/s")
+                        last_log = now
+                except Exception as e:
+                    logger.warning(f"[UTILS.INDEXACAO_XML.PROCESSAR_XML] Erro ao processar {xml_file}: {e}")
 
-                # Log de progresso a cada 500 arquivos
-                if processados % 500 == 0:
-                    tempo_decorrido = time.time() - inicio
-                    taxa = processados / tempo_decorrido
-                    progresso = processados / total_arquivos * 100
-                    logger.info(f"[INDEXAÇÃO] Progresso: {progresso:.1f}% - Taxa: {taxa:.0f} arq/s")
-                    
-            except Exception as e:
-                logger.warning(f"[INDEXAÇÃO] Erro ao processar {xml_file}: {e}")
-    
     tempo_total = time.time() - inicio
     total_indexado = len(xml_index)
     taxa_media = processados / tempo_total if tempo_total > 0 else 0
-    
-    logger.info(f"[INDEXAÇÃO] Indexação concluída em {tempo_total:.2f}s:")
-    logger.info(f"[INDEXAÇÃO] - {total_indexado} chaves únicas indexadas")
-    logger.info(f"[INDEXAÇÃO] - {processados} arquivos processados")
-    logger.info(f"[INDEXAÇÃO] - {duplicatas} duplicatas encontradas")
-    logger.info(f"[INDEXAÇÃO] - Taxa média: {taxa_media:.0f} arquivos/segundo")
-    
+
+    logger.info(f"[UTILS.INDEXACAO_XML] Indexação concluída em {tempo_total:.2f}s:")
+    logger.info(f"[UTILS.INDEXACAO_XML] - {total_indexado} chaves únicas indexadas")
+    logger.info(f"[UTILS.INDEXACAO_XML] - {processados} arquivos processados")
+    logger.info(f"[UTILS.INDEXACAO_XML] - {duplicatas} duplicatas encontradas")
+    logger.info(f"[UTILS.INDEXACAO_XML] - Taxa média: {taxa_media:.0f} arquivos/segundo")
+
     return xml_index
 
 
@@ -2609,7 +2719,7 @@ def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas") -> 
     except Exception as e:
         logger.error(f"[ANOMESDIA] Erro inesperado: {e}")
         return 0
-atualizar_anomesdia()
+
 
 def criar_views_otimizadas(db_path: str = "omie.db", table_name: str = "notas") -> None:
     """
