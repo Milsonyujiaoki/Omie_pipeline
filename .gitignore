@@ -21,6 +21,8 @@ debug_respostas/
 omie.db
 *.db
 *.bkp
+omie.db-shm
+omie.db-wal
 <<<<<<< HEAD
 DEV/05_INTEGRACOES/Api_sharepoint/Lista_pastas_sharepoint 1.py
 =======
