@@ -124,7 +124,7 @@ def carregar_configuracoes_client(path_arquivo: str = 'configuracao.ini') -> dic
         Dicionario contendo chaves de configuracoo da API.
     """
     config = configparser.ConfigParser()
-    config.read(path_arquivo)
+    config.read(path_arquivo, encoding='utf-8')
 
     return {
         "app_key": config['omie_api']['app_key'],

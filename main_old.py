@@ -53,6 +53,9 @@ from src.utils import (
     gerar_xml_path_otimizado
 )
 
+# Importação do sistema de paths portável
+from src.path_resolver import PathResolver
+
 # =============================================================================
 # Importacões dos modulos locais
 # =============================================================================
@@ -81,6 +84,21 @@ SQLITE_PRAGMAS: Dict[str, str] = {
     "mmap_size": "268435456",   # 256MB memory-mapped
     "query_planner": "1",       # Habilita query planner
 }
+
+# Instância global do PathResolver (será inicializada na main)
+path_resolver: Optional[PathResolver] = None
+
+# =============================================================================
+# Inicialização do sistema de paths portável
+# =============================================================================
+
+def inicializar_path_resolver() -> PathResolver:
+    """Inicializa o sistema de paths portável."""
+    global path_resolver
+    if path_resolver is None:
+        path_resolver = PathResolver()
+        path_resolver.validar_ambiente()
+    return path_resolver
 
 # =============================================================================
 # Configuracoo de logging estruturado
@@ -217,12 +235,9 @@ def _criar_console_handler(formato: str, encoding: str) -> logging.StreamHandler
             pass
     
     return handler
-    
-   
-
 
 # =============================================================================
-# Inicializacoo do sistema de logging
+# Inicialização do sistema de logging
 # =============================================================================
 # IMPORTANTE: Configurar logging antes de qualquer importacoo dos modulos locais
 # para garantir que todas as mensagens sejam capturadas adequadamente
@@ -258,19 +273,33 @@ def formatar_tempo_total(segundos: float) -> str:
         return f"{segs}s"
 
 # =============================================================================
-# Gerenciamento de configuracões do sistema
+# Gerenciamento de configurações do sistema
 # =============================================================================
-
-
 from pathlib import Path
 
 def carregar_configuracoes(config_path: str = "configuracao.ini") -> dict:
-    config_file = Path(config_path)
-    if not config_file.exists():
+    """
+    Carrega configurações com busca automática do arquivo.
+    Usa o mesmo sistema de busca do PathResolver para compatibilidade.
+    """
+    # Busca o arquivo nos mesmos locais que o PathResolver
+    locais_possiveis = [
+        Path(config_path),  # Caminho atual/absoluto
+        Path(__file__).parent / config_path,  # Ao lado do main_old.py
+        Path.cwd() / config_path,  # Diretório atual
+    ]
+    
+    config_file = None
+    for local in locais_possiveis:
+        if local.exists():
+            config_file = local
+            break
+    
+    if not config_file:
         raise FileNotFoundError(f"Arquivo de configuração não encontrado: {config_path}")
 
     config = configparser.ConfigParser()
-    config.read(config_file)
+    config.read(config_file, encoding='utf-8')
 
     # Leitura de todas as seções e conversão de tipos
     return {
@@ -360,7 +389,7 @@ def executar_atualizador_datas_query() -> None:
         try:
             import configparser
             config = configparser.ConfigParser()
-            config.read("configuracao.ini")
+            config.read("configuracao.ini", encoding='utf-8')
             if config.has_section('query_params'):
                 data_atual_inicio = config.get('query_params', 'start_date', fallback='N/A')
                 data_atual_fim = config.get('query_params', 'end_date', fallback='N/A')
@@ -375,7 +404,7 @@ def executar_atualizador_datas_query() -> None:
         try:
             import configparser
             config = configparser.ConfigParser()
-            config.read("configuracao.ini")
+            config.read("configuracao.ini", encoding='utf-8')
             if config.has_section('query_params'):
                 nova_data_inicio = config.get('query_params', 'start_date', fallback='N/A')
                 nova_data_fim = config.get('query_params', 'end_date', fallback='N/A')
@@ -428,7 +457,8 @@ def executar_atualizacao_caminhos() -> None:
         
         # Verificação prévia: há arquivos para processar?
         config = carregar_configuracoes()
-        resultado_dir = Path(config.get('resultado_dir', 'resultado'))
+        resolver = inicializar_path_resolver()
+        resultado_dir = resolver.get_path_by_key("resultado_dir")
         
         # Conta arquivos XML e ZIPs
         arquivos_xml = list(resultado_dir.rglob("*.xml"))
@@ -454,7 +484,8 @@ def executar_atualizacao_caminhos() -> None:
         # Validação pós-atualização: estatísticas
         try:
             import sqlite3
-            with sqlite3.connect('omie.db') as conn:
+            db_path = resolver.get_path_by_key("db_name")
+            with sqlite3.connect(str(db_path)) as conn:
                 cursor = conn.execute("SELECT COUNT(*) as total FROM notas WHERE xml_baixado = 1")
                 total_baixados = cursor.fetchone()[0]
                 
@@ -512,7 +543,9 @@ def executar_atualizacao_anomesdia() -> None:
         
         # Executa atualização com logging detalhado
         logger.info("[PIPELINE.ANOMESDIA] Processando registros sem campo anomesdia...")
-        registros_atualizados = atualizar_anomesdia(db_path="omie.db")
+        resolver = inicializar_path_resolver()
+        db_path = str(resolver.get_path_by_key("db_name"))
+        registros_atualizados = atualizar_anomesdia(db_path=db_path)
         
         t1 = time.time()
         duracao = t1 - t0
@@ -570,7 +603,8 @@ async def _pipeline_async_completo(client, config: Dict[str, Any]) -> None:
     from src.extrator_async import baixar_xmls, listar_nfs
     from src.utils import iniciar_db
     
-    db_name = "omie.db"
+    resolver = inicializar_path_resolver()
+    db_name = str(resolver.get_path_by_key("db_name"))
     t1 = time.time()
     logger.info("[PIPELINE.ASYNC] Iniciando pipeline assíncrono completo")
     logger.info(f"[PIPELINE.ASYNC] iniciando iniciar banco de dados: {db_name}")
@@ -651,7 +685,8 @@ def executar_compactador_resultado() -> None:
         
         # Adicionar métricas se disponível
         try:
-            resultado_dir = Path("resultado")
+            resolver = inicializar_path_resolver()
+            resultado_dir = resolver.get_path_by_key("resultado_dir")
             if resultado_dir.exists():
                 total_arquivos = len(list(resultado_dir.rglob("*.xml")))
                 total_zips = len(list(resultado_dir.rglob("*.zip")))
@@ -741,8 +776,6 @@ def executar_upload_resultado_onedrive() -> None:
         logger.exception(f"[PIPELINE.ONEDRIVE.ERRO] Erro critico durante upload: {e}")
         logger.error("[PIPELINE.ONEDRIVE.CONTINUACAO] Pipeline continuara sem upload")
 
-
-
 def executar_verificador_xmls() -> None:
     """
     Executa verificacao de integridade dos arquivos XML baixados.
@@ -806,7 +839,9 @@ def executar_verificador_xmls() -> None:
         
         # 2. Log de contexto antes da verificação (usando índice otimizado)
         try:
-            with conexao_otimizada("omie.db") as conn:
+            resolver = inicializar_path_resolver()
+            db_path = str(resolver.get_path_by_key("db_name"))
+            with conexao_otimizada(db_path) as conn:
                 cursor = conn.cursor()
                 
                 # Usa o índice idx_status_download para consulta rápida
@@ -863,7 +898,9 @@ def executar_verificador_xmls() -> None:
         
         # 6. Log de resultados pós-verificação (usando índices)
         try:
-            with conexao_otimizada("omie.db") as conn:
+            resolver = inicializar_path_resolver()
+            db_path = str(resolver.get_path_by_key("db_name"))
+            with conexao_otimizada(db_path) as conn:
                 cursor = conn.cursor()
                 
                 # Consultas otimizadas com índices
@@ -1178,6 +1215,18 @@ def main() -> None:
         import logging
         import configparser
         
+        # =============================================================================
+        # Inicialização do sistema de paths portável
+        # =============================================================================
+        logger.info("[MAIN.INIT] Inicializando sistema de paths portável...")
+        try:
+            resolver = inicializar_path_resolver()
+            logger.info("[MAIN.INIT] ✅ Sistema de paths portável inicializado com sucesso")
+        except Exception as resolver_error:
+            logger.exception(f"[MAIN.INIT] Erro crítico na inicialização do PathResolver: {resolver_error}")
+            logger.error("[MAIN.INIT] O sistema não pode continuar sem paths válidos")
+            sys.exit(1)
+        
         configurar_logging()
         
         # =============================================================================
@@ -1216,8 +1265,9 @@ def main() -> None:
             # Carregamento das configurações
             config = carregar_configuracoes()
             log_configuracoes(config, logger)
+            resolver = inicializar_path_resolver()
             resultado_dir = config.get('resultado_dir', 'resultado')
-            db_path = "omie.db"  # Caminho do banco SQLite
+            db_path = str(resolver.get_path_by_key("db_name"))  # Caminho do banco SQLite portável
         except Exception as e:
             logger.exception(f"[FASE 1] Erro ao carregar configurações: {e}")
         
@@ -1400,7 +1450,9 @@ def main() -> None:
             logger.info("[MAIN.METRICAS_COMPLETAS] Iniciando exibição de métricas completas...")
             # Import local para evitar dependência circular
             from src.utils import exibir_metricas_completas
-            exibir_metricas_completas("omie.db")
+            resolver = inicializar_path_resolver()
+            db_path = str(resolver.get_path_by_key("db_name"))
+            exibir_metricas_completas(db_path)
             logger.info("[MAIN.METRICAS_COMPLETAS] Exibição de métricas completas concluída com sucesso")
         except Exception as e:
             logger.error(f"[MÉTRICAS] Erro ao obter métricas completas: {e}")
@@ -1408,7 +1460,9 @@ def main() -> None:
             # Fallback para métricas básicas em caso de erro
             try:
                 import sqlite3
-                with sqlite3.connect("omie.db") as conn:
+                resolver = inicializar_path_resolver()
+                db_path = str(resolver.get_path_by_key("db_name"))
+                with sqlite3.connect(db_path) as conn:
                     cursor = conn.cursor()
                     
                     cursor.execute("SELECT COUNT(*) FROM notas")

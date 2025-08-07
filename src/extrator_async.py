@@ -44,17 +44,51 @@ logger = logging.getLogger(__name__)
 
 TABLE_NAME = "notas"
 
-# === Controle de limite de requisicões (4 por segundo) ===
+# Carregamento de configurações do arquivo INI
+def _carregar_configuracoes_extrator():
+    """Carrega configurações específicas do extrator."""
+    import configparser
+    config = configparser.ConfigParser()
+    config_path = Path("configuracao.ini")
+    
+    if config_path.exists():
+        config.read(config_path, encoding='utf-8')
+        
+        return {
+            'calls_per_second': config.getint('concorrencia', 'calls_per_second_global', fallback=4),
+            'max_concurrent': config.getint('concorrencia', 'max_concurrent', fallback=4),
+            'intervalo_minimo': config.getfloat('concorrencia', 'intervalo_minimo_requisicoes', fallback=0.25),
+            'timeout_conexao': config.getint('retry', 'timeout_conexao', fallback=60),
+            'max_retries': config.getint('retry', 'max_retries', fallback=3),
+            'sqlite_cache_size': config.getint('cache', 'sqlite_cache_size', fallback=-64000),
+            'sqlite_mmap_size': config.getint('cache', 'sqlite_mmap_size', fallback=268435456),
+        }
+    else:
+        # Valores padrão se não houver configuração
+        return {
+            'calls_per_second': 4,
+            'max_concurrent': 4,
+            'intervalo_minimo': 0.25,
+            'timeout_conexao': 60,
+            'max_retries': 3,
+            'sqlite_cache_size': -64000,
+            'sqlite_mmap_size': 268435456,
+        }
+
+# Configurações carregadas do arquivo INI
+_config_extrator = _carregar_configuracoes_extrator()
+
+# === Controle de limite de requisicões (configurável) ===
 ULTIMA_REQUISICAO = 0.0
 LOCK = Lock()
 
-# Configurações de otimização SQLite
+# Configurações de otimização SQLite (vindas da configuração)
 SQLITE_PRAGMAS: Dict[str, str] = {
     "journal_mode": "WAL",
     "synchronous": "NORMAL",
     "temp_store": "MEMORY",
-    "cache_size": "-64000",  # 64MB cache
-    "mmap_size": "268435456"  # 256MB mmap
+    "cache_size": str(_config_extrator['sqlite_cache_size']),  # Configurável
+    "mmap_size": str(_config_extrator['sqlite_mmap_size'])     # Configurável
 }
 
 
@@ -63,8 +97,9 @@ def respeitar_limite_requisicoes() -> None:
     with LOCK:
         agora = time.monotonic()
         tempo_decorrido = agora - ULTIMA_REQUISICAO
-        if tempo_decorrido < 0.25:
-            time.sleep(0.25 - tempo_decorrido)
+        intervalo_minimo = _config_extrator['intervalo_minimo']
+        if tempo_decorrido < intervalo_minimo:
+            time.sleep(intervalo_minimo - tempo_decorrido)
         ULTIMA_REQUISICAO = time.monotonic()
 
 
@@ -105,7 +140,7 @@ async def call_api(
     Função síncrona para chamada de API com retentativas e backoff.
     """
     import time
-    max_retentativas = 3
+    max_retentativas = _config_extrator['max_retries']
     for tentativa in range(1, max_retentativas + 1):
         try:
             await respeitar_limite_requisicoes_async()

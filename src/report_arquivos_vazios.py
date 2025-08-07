@@ -7,6 +7,7 @@ from threading import Lock
 import os
 import time
 import sys
+import configparser
 
 import pandas as pd
 
@@ -15,16 +16,45 @@ logger = logging.getLogger(__name__)
 # Lock para garantir seguranca em leitura de arquivos concorrentes
 _file_lock = Lock()
 
-# Caminho do relatorio padroo
-RELATORIO_EXCEL = Path("relatorio_arquivos_vazios.xlsx")
+# Carregamento de configurações do arquivo INI
+def _carregar_configuracoes_relatorio():
+    """Carrega configurações específicas do módulo de relatório."""
+    config = configparser.ConfigParser()
+    config_path = Path("configuracao.ini")
+    
+    if config_path.exists():
+        config.read(config_path)
+        
+        return {
+            'batch_size': config.getint('performance', 'batch_size_relatorio', fallback=1000),
+            'max_workers': config.getint('performance', 'max_workers_relatorio', fallback=min(32, os.cpu_count() * 2)),
+            'chunk_size': config.getint('performance', 'chunk_size_arquivo', fallback=8192),
+            'extensoes_ignoradas': set(config.get('cache', 'extensoes_ignoradas', fallback='.tmp,.log,.lock,.bak,.cache').split(',')),
+            'relatorio_path': config.get('paths', 'relatorio_arquivos_vazios', fallback='relatorio_arquivos_vazios.xlsx')
+        }
+    else:
+        # Valores padrão se não houver configuração
+        return {
+            'batch_size': 1000,
+            'max_workers': min(32, os.cpu_count() * 2),
+            'chunk_size': 8192,
+            'extensoes_ignoradas': {'.tmp', '.log', '.lock', '.bak', '.cache'},
+            'relatorio_path': 'relatorio_arquivos_vazios.xlsx'
+        }
 
-# Constantes para otimização
-BATCH_SIZE = 1000  # Processar arquivos em lotes
-MAX_WORKERS = min(32, os.cpu_count() * 2)  # Limite de workers
-CHUNK_SIZE = 8192  # Tamanho do chunk para leitura de arquivos
+# Configurações carregadas do arquivo INI
+_config_relatorio = _carregar_configuracoes_relatorio()
 
-# Cache para extensões que devem ser ignoradas
-EXTENSOES_IGNORADAS = {'.tmp', '.log', '.lock', '.bak', '.cache'}
+# Caminho do relatorio configurável
+RELATORIO_EXCEL = Path(_config_relatorio['relatorio_path'])
+
+# Constantes para otimização vindas da configuração
+BATCH_SIZE = _config_relatorio['batch_size']
+MAX_WORKERS = _config_relatorio['max_workers']
+CHUNK_SIZE = _config_relatorio['chunk_size']
+
+# Cache para extensões que devem ser ignoradas (configurável)
+EXTENSOES_IGNORADAS = _config_relatorio['extensoes_ignoradas']
 
 # Cache para arquivos ja processados
 _arquivos_processados: Set[str] = set()

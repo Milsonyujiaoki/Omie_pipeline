@@ -61,10 +61,20 @@ def atualizar_datas_configuracao_ini():
     - Considera o arquivo 'feriados.txt' para validacoo de dias uteis.
     """
     config = configparser.ConfigParser()
-    config.read('configuracao.ini')
+    config.read('configuracao.ini', encoding='utf-8')
+
+    # Verificar se a seção query_params existe
+    if 'query_params' not in config:
+        logger.error("Seção [query_params] não encontrada no arquivo de configuração!")
+        # Criar a seção se não existir
+        config['query_params'] = {}
+        config['query_params']['start_date'] = '01/06/2025'
+        config['query_params']['end_date'] = '31/12/2025'
+        config['query_params']['records_per_page'] = '200'
+        logger.info("Seção [query_params] criada com valores padrão")
 
     # Obtem o caminho real do arquivo de configuracoo a ser atualizado
-    caminho_arquivo = config['paths']['caminho_config_ini']
+    caminho_arquivo = 'configuracao.ini'  # Usa o próprio arquivo de configuração
     formato_data = "%d/%m/%Y"
 
     # Carrega lista de feriados, se houver
@@ -86,7 +96,7 @@ def atualizar_datas_configuracao_ini():
     config['query_params']['end_date'] = end_date.strftime(formato_data)
 
     # Escreve as alteracões no arquivo INI
-    with open(caminho_arquivo, 'w') as configfile:
+    with open(caminho_arquivo, 'w', encoding='utf-8') as configfile:
         config.write(configfile)
 
     # Loga as alteracões realizadas
