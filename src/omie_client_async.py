@@ -123,8 +123,23 @@ def carregar_configuracoes_client(path_arquivo: str = 'configuracao.ini') -> dic
     Returns:
         Dicionario contendo chaves de configuracoo da API.
     """
+    import os
+    
+    # Se usar caminho relativo, garantir que está no diretório correto
+    if not os.path.isabs(path_arquivo):
+        # Garantir que está no diretório do projeto
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path_arquivo = os.path.join(base_dir, path_arquivo)
+    
     config = configparser.ConfigParser()
     config.read(path_arquivo, encoding='utf-8')
+
+    # Debug: verificar se as seções necessárias existem
+    if not config.has_section('omie_api'):
+        raise KeyError(f"Seção [omie_api] não encontrada no arquivo {path_arquivo}. Seções disponíveis: {list(config.sections())}")
+    
+    if not config.has_section('query_params'):
+        raise KeyError(f"Seção [query_params] não encontrada no arquivo {path_arquivo}. Seções disponíveis: {list(config.sections())}")
 
     return {
         "app_key": config['omie_api']['app_key'],

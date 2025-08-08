@@ -2682,7 +2682,7 @@ def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas") -> 
                     data_normalizada = normalizar_data(dEmi)
                     if data_normalizada:
                         # Converte para YYYYMMDD
-                        ano, mes, dia = data_normalizada.split('/')
+                        dia, mes, ano = data_normalizada.split('/')
                         anomesdia = int(f"{ano}{mes}{dia}")
                         atualizacoes.append((anomesdia, chave))
                     else:

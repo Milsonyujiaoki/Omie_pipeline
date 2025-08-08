@@ -52,7 +52,7 @@ def _carregar_configuracoes_extrator():
     config_path = Path("configuracao.ini")
     
     if config_path.exists():
-        config.read(config_path, encoding='utf-8')
+        config.read(config_path)
         
         return {
             'calls_per_second': config.getint('concorrencia', 'calls_per_second_global', fallback=4),

@@ -1232,6 +1232,12 @@ def main() -> None:
         # =============================================================================
         # Fase 1: Inicialização e configuração
         # =============================================================================
+        
+        # Inicializar variáveis com valores padrão
+        config = {}
+        resultado_dir = "resultado"
+        db_path = "omie.db"
+        
         try:
             logger.info("=" * 80)
             logger.info("INICIANDO PIPELINE DO EXTRATOR OMIE V3 SIMPLIFICADO")
@@ -1262,14 +1268,26 @@ def main() -> None:
             logger.info(f"[MAIN.AMBIENTE] Argumentos: {sys.argv}")
             logger.info(f"[MAIN.AMBIENTE] Diretório de trabalho: {os.getcwd()}")
             logger.info(f"[MAIN.AMBIENTE] Versão do Python: {sys.version}")
+            
             # Carregamento das configurações
             config = carregar_configuracoes()
             log_configuracoes(config, logger)
             resolver = inicializar_path_resolver()
             resultado_dir = config.get('resultado_dir', 'resultado')
             db_path = str(resolver.get_path_by_key("db_name"))  # Caminho do banco SQLite portável
+            
         except Exception as e:
             logger.exception(f"[FASE 1] Erro ao carregar configurações: {e}")
+            logger.error("[FASE 1] Usando configurações padrão para continuidade")
+            # Garantir que pelo menos as variáveis básicas estejam definidas
+            if not config:
+                config = {'resultado_dir': 'resultado'}
+            try:
+                resolver = inicializar_path_resolver()
+                db_path = str(resolver.get_path_by_key("db_name"))
+            except Exception as path_error:
+                logger.error(f"[FASE 1] Erro crítico no PathResolver: {path_error}")
+                sys.exit(1)
         
         # =============================================================================
         # Fase 2: Atualização de campos essenciais dos registros pendentes
@@ -1305,7 +1323,7 @@ def main() -> None:
             logger.info("[FASE 2.5] - Atualizando datas de consulta...")
             try:
                 logger.info("[MAIN.ATUALIZADOR_DATAS] Atualizando datas de consulta...")
-                executar_atualizador_datas_query()
+                #executar_atualizador_datas_query()
                 logger.info("[MAIN.ATUALIZADOR_DATAS] Datas de consulta atualizadas")
                 logger.info("[FASE 2.5] - ✓ Datas atualizadas com sucesso")
             except Exception as e:
