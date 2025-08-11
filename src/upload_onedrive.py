@@ -41,14 +41,17 @@ import json
 import logging
 import configparser
 import time
+import os
 from pathlib import Path
 from typing import Optional, Dict, Set, List, Any, Tuple
-from dotenv import load_dotenv
 
 import requests
 from requests import Response
 
-from utils import extrair_mes_do_path  # Integracoo com utilitario centralizado
+try:
+    from .utils import extrair_mes_do_path  # Integracoo com utilitario centralizado
+except ImportError:
+    from utils import extrair_mes_do_path  # Fallback para execução direta
 
 # =============================================================================
 # CONFIGURAcoO DE LOGGING
@@ -61,20 +64,54 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 # Carregamento de configuracões
-load_dotenv()
 config = configparser.ConfigParser()
-config.read("configuracao.ini")
+config.read("configuracao.ini", encoding='utf-8')
 
 # Configuracões de upload
 UPLOAD_ENABLED = config.getboolean("ONEDRIVE", "upload_onedrive", fallback=False)
 
-# Variaveis sensiveis carregadas do ambiente
-CLIENT_ID = os.getenv("ONEDRIVE_CLIENT_ID")
-CLIENT_SECRET = os.getenv("ONEDRIVE_CLIENT_SECRET") 
-TENANT_ID = os.getenv("ONEDRIVE_TENANT_ID")
-SHAREPOINT_SITE = os.getenv("SHAREPOINT_SITE")
-SHAREPOINT_FOLDER = os.getenv("SHAREPOINT_FOLDER")
-DRIVE_NAME = os.getenv("ONEDRIVE_DRIVE_NAME")
+# Função para carregar credenciais do configuracao.ini
+def get_onedrive_credentials() -> Dict[str, str]:
+    """Carrega credenciais OneDrive do configuracao.ini."""
+    # Tenta sistema flexível primeiro, depois legado
+    if config.has_section('onedrive_business'):
+        section = 'onedrive_business'
+        # Para onedrive_business, monta o caminho usando base_folder + upload_folder
+        base_folder = config.get(section, 'base_folder', fallback='')
+        upload_folder = config.get(section, 'upload_folder', fallback='')
+        
+        if base_folder and upload_folder:
+            folder_path = f"{base_folder}/{upload_folder}".replace('//', '/')
+        elif upload_folder:
+            folder_path = upload_folder
+        elif base_folder:
+            folder_path = base_folder
+        else:
+            folder_path = ''
+            
+    elif config.has_section('ONEDRIVE'):
+        section = 'ONEDRIVE'
+        folder_path = config.get(section, 'folder_path', fallback=config.get(section, 'pasta_destino', fallback=''))
+    else:
+        return {}
+    
+    return {
+        'client_id': config.get(section, 'client_id', fallback=''),
+        'client_secret': config.get(section, 'client_secret', fallback=''),
+        'tenant_id': config.get(section, 'tenant_id', fallback=''),
+        'site_url': config.get(section, 'site_url', fallback=''),
+        'drive_name': config.get(section, 'drive_name', fallback=''),
+        'folder_path': folder_path
+    }
+
+# Carrega credenciais
+_credentials = get_onedrive_credentials()
+CLIENT_ID = _credentials.get('client_id')
+CLIENT_SECRET = _credentials.get('client_secret') 
+TENANT_ID = _credentials.get('tenant_id')
+SHAREPOINT_SITE = _credentials.get('site_url')
+SHAREPOINT_FOLDER = _credentials.get('folder_path')
+DRIVE_NAME = _credentials.get('drive_name')
 
 # Validacoo de variaveis obrigatorias
 REQUIRED_VARS = [CLIENT_ID, CLIENT_SECRET, TENANT_ID, SHAREPOINT_SITE, SHAREPOINT_FOLDER, DRIVE_NAME]
@@ -207,7 +244,13 @@ class OneDriveClient:
         """
         try:
             self.access_token: Optional[str] = None
-            self.drive_id: str = DRIVE_NAME  # Usando diretamente o ID do drive
+            
+            # Inicialização segura do drive_id
+            if DRIVE_NAME:
+                self.drive_id: str = DRIVE_NAME  # Usando diretamente o ID do drive
+            else:
+                raise ValueError("ONEDRIVE_DRIVE_NAME não está configurado no arquivo .env")
+                
             self.pastas_cache: Dict[str, str] = {}
             self.upload_history: Set[str] = set()
             
