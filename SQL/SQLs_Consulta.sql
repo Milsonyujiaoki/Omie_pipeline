@@ -8,8 +8,10 @@ GROUP BY cChaveNFe
 HAVING qtd > 1;
 
 SELECT * FROM notas WHERE anomesdia = (SELECT MAX(anomesdia) FROM notas);
-SELECT * FROM notas WHERE anomesdia is NULL;
-
+SELECT * FROM notas WHERE anomesdia = 20250728;
+SELECT* from notas where dEmi = '28/07/2025'
+SELECT* from notas where dEmi = '08/08/2025'
+SELECT * from notas where nNF in ('01435150', '01435151', '01433565', '01433566', '01433567', '01432319','01432320')
 
 SELECT * FROM notas WHERE caminho_arquivo is NULL
 

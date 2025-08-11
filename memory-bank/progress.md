@@ -1,15 +1,22 @@
-# Progress (Updated: 2025-07-27)
+# Progress (Updated: 2025-08-09)
 
 ## Done
 
-- Análise comparativa entre os.scandir e fastglob para busca de arquivos
-- Recomendação de abordagem para integração com multithreading
+- Consolidar todas as configurações em configuracao.ini
+- Remover dependência de arquivos .env e upload_config.ini
+- Atualizar upload_manager.py para novo formato de configuração
+- Atualizar upload_onedrive.py para novo formato de configuração
+- Atualizar main_old.py para detecção baseada em seções
+- Criar sistema de detecção automática inteligente
+- Testar carregamento de credenciais consolidadas
+- Manter compatibilidade total com sistema legado
 
 ## Doing
 
-- Integração de busca recursiva otimizada de XMLs com os.scandir e multithreading em atualizar_caminhos_arquivos.py
+- Documentar processo de migração completo
 
 ## Next
 
-- Testar performance da nova função em diferentes cenários de estrutura de pastas
-- Documentar exemplos de uso e resultados de benchmark no contexto do projeto
+- Testar pipeline completa com configuração consolidada
+- Validar uploads em ambiente real
+- Otimizar configuração para facilidade de uso

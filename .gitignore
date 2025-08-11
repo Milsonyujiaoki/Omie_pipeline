@@ -29,3 +29,5 @@ DEV/05_INTEGRACOES/Api_sharepoint/Lista_pastas_sharepoint 1.py
 DEV/05_INTEGRACOES
 >>>>>>> 3394157 (0)
 Utilitarios/05_Testes_Organizados/Funcionalidade/test_Teste-envio-api 1.py
+backup_uploads
+src/__pycache__

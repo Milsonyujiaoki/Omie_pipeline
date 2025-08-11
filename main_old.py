@@ -38,13 +38,13 @@ import sqlite3
 import re
 import signal
 import requests
-import datetime
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, NamedTuple, Tuple
 from dataclasses import dataclass
 from contextlib import contextmanager
 import xml.etree.ElementTree as ET
+import threading
 from src.utils import (
     atualizar_campos_registros_pendentes, 
     conexao_otimizada,
@@ -227,12 +227,14 @@ def _criar_console_handler(formato: str, encoding: str) -> logging.StreamHandler
     handler.setFormatter(logging.Formatter(formato))
     
     # Tenta configurar encoding se suportado (Python 3.7+)
-    if hasattr(handler.stream, 'reconfigure'):
-        try:
-            handler.stream.reconfigure(encoding=encoding, errors='replace')
-        except Exception:
-            # Falha silenciosa - usa encoding padrão
-            pass
+    try:
+        # Verifica se o método reconfigure existe antes de chamar
+        reconfigure_method = getattr(handler.stream, 'reconfigure', None)
+        if reconfigure_method is not None:
+            reconfigure_method(encoding=encoding, errors='replace')
+    except (AttributeError, Exception):
+        # Falha silenciosa - usa encoding padrão
+        pass
     
     return handler
 
@@ -577,15 +579,20 @@ def _executar_async_com_config(config: Dict[str, Any]) -> None:
         from src.omie_client_async import OmieClient, carregar_configuracoes_client
         config = carregar_configuracoes_client()
         # Credenciais e URLs da API Omie
-        if not config.get('app_key') or not config.get('app_secret'):
+        # Validar que as chaves obrigatórias existem
+        app_key = config.get('app_key')
+        app_secret = config.get('app_secret')
+        
+        if not app_key or not app_secret:
             raise ValueError("app_key e app_secret são obrigatórios no arquivo de configuração")
+            
         for v, k in config.items():
             logger.info(f"[ASYNC.CONFIG] Configurações carregadas com sucesso {v}: {k}")
 
         # Criar cliente com configurações
         client = OmieClient(
-            app_key=config.get('app_key'),
-            app_secret=config.get('app_secret'),
+            app_key=app_key,
+            app_secret=app_secret,
             calls_per_second=config.get('calls_per_second', 4)
         )
         
@@ -728,6 +735,7 @@ def executar_upload_resultado_onedrive() -> None:
         
         # Import local para evitar dependência circular
         from src.upload_onedrive import fazer_upload_lote
+        logger.info("[PIPELINE.UPLOAD] Usando sistema legado de upload")
         
         t0 = time.time()
         
@@ -993,20 +1001,21 @@ def executar_relatorio_arquivos_vazios(pasta: str) -> None:
         except Exception as e:
             logger.warning(f"[PIPELINE.RELATORIO.CONTAGEM] Erro ao contar arquivos/subdiretórios: {e}")
         
-        # Timeout handler
-        def timeout_handler(signum, frame):
-            logger.warning("[PIPELINE.RELATORIO.TIMEOUT] Timeout de 30 minutos atingido! Interrompendo analise")
-            raise TimeoutError("Timeout na analise de arquivos")
+        # Sistema de timeout compatível com Windows usando threading
+        timeout_seconds = 1800  # 30 minutos
+        timeout_event = threading.Event()
+        timeout_occurred = False
         
-        # Configura timeout de 30 minutos
-        try:
-            import signal
-            if hasattr(signal, 'SIGALRM'):
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(1800)  # 30 minutos
-                logger.debug("[PIPELINE.RELATORIO.TIMEOUT] Timeout de 30 minutos configurado")
-        except ImportError:
-            logger.warning("[PIPELINE.RELATORIO.TIMEOUT] Signal nao disponivel - timeout desabilitado")
+        def timeout_handler():
+            nonlocal timeout_occurred
+            if not timeout_event.wait(timeout_seconds):
+                timeout_occurred = True
+                logger.warning("[PIPELINE.RELATORIO.TIMEOUT] Timeout de 30 minutos atingido!")
+        
+        # Inicia o timer de timeout
+        timeout_thread = threading.Thread(target=timeout_handler, daemon=True)
+        timeout_thread.start()
+        logger.debug("[PIPELINE.RELATORIO.TIMEOUT] Timeout de 30 minutos configurado")
         
         t0 = time.time()
         logger.info("[PIPELINE.RELATORIO.INICIO] Iniciando analise detalhada")
@@ -1014,6 +1023,11 @@ def executar_relatorio_arquivos_vazios(pasta: str) -> None:
         try:
             # Import local para evitar dependência circular
             from src import report_arquivos_vazios
+            
+            # Verifica timeout antes de continuar
+            if timeout_occurred:
+                raise TimeoutError("Timeout na analise de arquivos")
+                
             report_arquivos_vazios.gerar_relatorio(pasta)
             
         except TimeoutError:
@@ -1021,12 +1035,8 @@ def executar_relatorio_arquivos_vazios(pasta: str) -> None:
             _executar_relatorio_rapido(pasta)
             
         finally:
-            try:
-                import signal
-                if hasattr(signal, 'SIGALRM'):
-                    signal.alarm(0)  # Cancela timeout
-            except ImportError:
-                pass
+            # Cancela o timeout
+            timeout_event.set()
         
         t1 = time.time()
         duracao = t1 - t0
@@ -1049,7 +1059,7 @@ def _executar_relatorio_rapido(pasta: str) -> None:
         t_inicio = time.time()
         
         root = Path(pasta)
-        sete_dias_atras = datetime.now() - datetime.timedelta(days=7)
+        sete_dias_atras = datetime.now() - timedelta(days=7)
         timestamp_limite = sete_dias_atras.timestamp()
         
         logger.info(f"[PIPELINE.RELATORIO.RAPIDO.FILTRO] Analisando arquivos modificados apos: {sete_dias_atras.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1323,7 +1333,7 @@ def main() -> None:
             logger.info("[FASE 2.5] - Atualizando datas de consulta...")
             try:
                 logger.info("[MAIN.ATUALIZADOR_DATAS] Atualizando datas de consulta...")
-                #executar_atualizador_datas_query()
+                executar_atualizador_datas_query()
                 logger.info("[MAIN.ATUALIZADOR_DATAS] Datas de consulta atualizadas")
                 logger.info("[FASE 2.5] - ✓ Datas atualizadas com sucesso")
             except Exception as e:
@@ -1526,11 +1536,6 @@ def main() -> None:
         else:
             logger.error(f"[DEBUG] Tipo de erro: {type(e).__name__}")
 
-        sys.exit(1)
-        
-    except Exception as e:
-        logger.exception(f"[MAIN] Erro crítico no pipeline principal: {e}")
-        logger.error("[MAIN] Pipeline falhou com erro crítico")
         sys.exit(1)
 
 

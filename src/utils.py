@@ -106,8 +106,7 @@ _cache_stats = {
 # =============================================================================
 # Campos obrigatórios para validação de integridade de registros
 CAMPOS_ESSENCIAIS: List[str] = [
-    'cChaveNFe', 'nIdNF', 'nIdPedido', 'dEmi', 'dReg', 'nNF', 'caminho_arquivo'
-]
+    'cChaveNFe', 'nIdNF', 'nIdPedido', 'dEmi', 'dReg', 'nNF', 'caminho_arquivo']
 
 # XPaths para extração de dados de arquivos XML
 XPATHS: Dict[str, str] = {
@@ -272,7 +271,6 @@ class DatabaseConfig:
             "temp_store": self.temp_store
         }
 
-
 @dataclass
 class ResultadoSalvamento:
     """Resultado estruturado de operações de salvamento."""
@@ -283,21 +281,17 @@ class ResultadoSalvamento:
     motivo: Optional[str] = None
     tempo_execucao: Optional[float] = None
 
-
 class DatabaseError(Exception):
     """Exceção específica para erros de banco de dados."""
     pass
-
 
 class SchemaError(DatabaseError):
     """Exceção para erros de schema."""
     pass
 
-
 class RegistroInvalidoError(ValueError):
     """Exceção para registros com dados inválidos."""
     pass
-
 
 # =============================================================================
 # VALIDAÇÃO E NORMALIZAÇÃO DE DADOS
@@ -354,7 +348,6 @@ def normalizar_data(data: Optional[str]) -> Optional[str]:
     logger.warning(f"[DATA] Formato de data não reconhecido: '{data}'")
     return None
 
-
 def normalizar_valor_nf(valor: Union[str, float, int, None]) -> float:
     """
     Converte valor para float com tratamento robusto de erros.
@@ -389,11 +382,9 @@ def normalizar_valor_nf(valor: Union[str, float, int, None]) -> float:
         logger.warning(f"[VALOR] Erro inesperado ao normalizar valor '{valor}': {e}")
         return 0.0
 
-
 # =============================================================================
 # TRANSFORMAÇÃO DE DADOS
 # =============================================================================
-
 def transformar_em_tuple(registro: Dict) -> Tuple:
     """
     Transforma dicionario de nota fiscal em tupla para insercoo otimizada no banco.
@@ -488,11 +479,9 @@ def transformar_em_tuple(registro: Dict) -> Tuple:
         logger.error(f"[TUPLE] Registro problematico: {registro}")
         raise
 
-
 # =============================================================================
 # MANIPULAÇÃO DE ARQUIVOS E CAMINHOS
 # =============================================================================
-
 def criar_lockfile(pasta: Path) -> Path:
     """
     Cria arquivo de lock para controle de acesso exclusivo à pasta.
@@ -1232,7 +1221,6 @@ def listar_xmls_hibrido(root: Path, max_workers: int = 8, enable_cache: bool = T
     
     return arquivos_xml
 
-
 def limpar_cache_indexacao_xmls() -> int:
     """
     Limpa o cache global de indexação de XMLs.
@@ -1257,7 +1245,6 @@ def limpar_cache_indexacao_xmls() -> int:
         }
         logger.info(f"[CACHE] Cache limpo: {entries_removed} entradas removidas")
         return entries_removed
-
 
 def obter_estatisticas_cache() -> Dict[str, Any]:
     """
@@ -1287,7 +1274,6 @@ def obter_estatisticas_cache() -> Dict[str, Any]:
 # Estado global para rate limiting assíncrono
 _ultima_chamada_async = 0.0
 
-
 async def respeitar_limite_requisicoes_async(min_intervalo: float = 0.25) -> None:
     """
     Implementa rate limiting assíncrono para controle de frequência de requisições.
@@ -1309,7 +1295,8 @@ async def respeitar_limite_requisicoes_async(min_intervalo: float = 0.25) -> Non
     
     _ultima_chamada_async = monotonic()
 
-
+# Variável global para controle de rate limiting
+_ultima_chamada_sync: float = 0.0
 
 def respeitar_limite_requisicoes(min_intervalo: float = 0.25, ultima_chamada: Optional[List[float]] = None) -> None:
     """
@@ -1320,32 +1307,26 @@ def respeitar_limite_requisicoes(min_intervalo: float = 0.25, ultima_chamada: Op
     
     Args:
         min_intervalo: Intervalo minimo em segundos entre chamadas
-        ultima_chamada: Lista mutavel para armazenar timestamp da ultima chamada
+        ultima_chamada: Lista mutavel para armazenar timestamp da ultima chamada (deprecated)
         
     Examples:
         >>> respeitar_limite_requisicoes(0.25)  # 4 req/s maximo
         >>> respeitar_limite_requisicoes(1.0)   # 1 req/s maximo
     """
-    if ultima_chamada is None:
-        ultima_chamada = 0.0
-
+    global _ultima_chamada_sync
+    
     tempo_atual = monotonic()
-    tempo_decorrido = tempo_atual - ultima_chamada[0]
+    tempo_decorrido = tempo_atual - _ultima_chamada_sync
     
     if tempo_decorrido < min_intervalo:
         tempo_espera = min_intervalo - tempo_decorrido
         sleep(tempo_espera)
     
-    ultima_chamada[0] = monotonic()
-
+    _ultima_chamada_sync = monotonic()
 
 # =============================================================================
 # 🗃️ OPERAÇÕES DE BANCO DE DADOS
 # =============================================================================
-
-class RegistroInvalidoError(ValueError):
-    """Exceção para registros com dados inválidos."""
-    pass
 
 @contextmanager
 def conexao_otimizada(db_path: str, config: Optional[DatabaseConfig] = None):
@@ -2084,7 +2065,6 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
     
     logger.info(f"[ATUALIZACAO_PENDENTES] ==========================================")
 
-
 def _verificar_views_e_indices_disponiveis(db_path: str) -> Dict[str, bool]:
     """
     Verifica quais views e índices estão disponíveis no banco para otimização.
@@ -2150,7 +2130,6 @@ def _verificar_views_e_indices_disponiveis(db_path: str) -> Dict[str, bool]:
 
     logger.debug(f"[UTILS.VERIFICACAO_VIEWS_INDICES] Disponibilidade: {disponibilidade}")
     return disponibilidade
-
 
 def _indexar_xmls_por_chave_com_dados(resultado_dir: str) -> Dict[str, Tuple[Path, Dict[str, str]]]:
     """
@@ -2271,7 +2250,6 @@ def _indexar_xmls_por_chave_com_dados(resultado_dir: str) -> Dict[str, Tuple[Pat
 
     return xml_index
 
-
 def verificar_schema_banco(db_path: str) -> Dict[str, bool]:
     """
     Verifica se o schema do banco contém todas as colunas necessárias.
@@ -2381,7 +2359,6 @@ def marcar_como_baixado(
     except Exception as e:
         logger.exception(f"[ERRO] Falha ao marcar registro como baixado para {chave}: {e}")
 
-
 def _validar_registro_nota(registro: Dict[str, Union[str, int, float, None]]) -> None:
     """
     Valida campos obrigatórios de um registro de nota fiscal.
@@ -2416,7 +2393,6 @@ def _validar_registro_nota(registro: Dict[str, Union[str, int, float, None]]) ->
     nNF = registro.get('nNF')
     if not nNF or (isinstance(nNF, str) and not nNF.strip()):
         raise RegistroInvalidoError(f"Número da NFe ausente para chave: {chave}")
-
 
 def salvar_varias_notas(
     registros: List[Dict[str, Union[str, int, float, None]]], 
@@ -2491,7 +2467,8 @@ def salvar_varias_notas(
                 registros_validos.append(registro)
             except RegistroInvalidoError as e:
                 chave = registro.get('cChaveNFe', f'REGISTRO_{i}')
-                logger.warning(f"[LOTE] Registro inválido ignorado ({chave[:8]}...): {e}")
+                chave_str = str(chave) if chave else f'REGISTRO_{i}'
+                logger.warning(f"[LOTE] Registro inválido ignorado ({chave_str[:8]}...): {e}")
                 chaves_com_erro.append(chave)
                 total_erros += 1
         
@@ -2512,7 +2489,8 @@ def salvar_varias_notas(
                         dados_lote.append(transformar_em_tuple(registro))
                     except Exception as e:
                         chave = registro.get('cChaveNFe', 'NULL')
-                        logger.warning(f"[LOTE] Erro na transformação ({chave[:8]}...): {e}")
+                        chave_str = str(chave) if chave else 'NULL'
+                        logger.warning(f"[LOTE] Erro na transformação ({chave_str[:8]}...): {e}")
                         chaves_com_erro.append(chave)
                         total_erros += 1
                 
@@ -2572,7 +2550,6 @@ def salvar_varias_notas(
     
     return resultado
 
-
 # =============================================================================
 # 📅 FUNÇÕES DE INDEXAÇÃO TEMPORAL
 # =============================================================================
@@ -2625,7 +2602,6 @@ def garantir_coluna_anomesdia(db_path: str = "omie.db", table_name: str = "notas
         logger.error(f"[ANOMESDIA] Erro inesperado ao criar coluna: {e}")
         return False
 
-
 def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas") -> int:
     """
     Atualiza o campo anomesdia (YYYYMMDD) baseado no campo dEmi.
@@ -2663,7 +2639,6 @@ def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas") -> 
                 WHERE dEmi IS NOT NULL 
                 AND dEmi != '' 
                 AND dEmi != '-'
-                AND (anomesdia IS NULL OR anomesdia = 0)
             """)
             
             registros = cursor.fetchall()
@@ -2719,7 +2694,6 @@ def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas") -> 
     except Exception as e:
         logger.error(f"[ANOMESDIA] Erro inesperado: {e}")
         return 0
-
 
 def criar_views_otimizadas(db_path: str = "omie.db", table_name: str = "notas") -> None:
     """
@@ -2828,8 +2802,6 @@ def criar_views_otimizadas(db_path: str = "omie.db", table_name: str = "notas") 
     except Exception as e:
         logger.error(f"[VIEWS] Erro inesperado: {e}")
 
-
-
 # =============================================================================
 # 📊 FUNÇÕES DE MÉTRICAS E RELATÓRIOS
 # =============================================================================
@@ -2849,7 +2821,6 @@ def formatar_numero(n: int) -> str:
         '1.234.567'
     """
     return f"{n:,}".replace(",", ".")
-
 
 def obter_metricas_completas_banco(db_path: str = "omie.db") -> Dict[str, Any]:
     """
@@ -3042,7 +3013,6 @@ def obter_metricas_completas_banco(db_path: str = "omie.db") -> Dict[str, Any]:
         logger.error(f"[MÉTRICAS] Erro inesperado: {e}")
         return {}
 
-
 def _calcular_tempo_estimado(total: int, baixados: int, pendentes: int, percentual: float) -> str:
     """
     Calcula tempo estimado para conclusão baseado no progresso atual.
@@ -3072,7 +3042,6 @@ def _calcular_tempo_estimado(total: int, baixados: int, pendentes: int, percentu
     else:
         return "Calculando..."
 
-
 def _determinar_status_processamento(percentual: float, pendentes: int) -> str:
     """
     Determina o status atual do processamento.
@@ -3096,7 +3065,6 @@ def _determinar_status_processamento(percentual: float, pendentes: int) -> str:
         return "Inicial"
     else:
         return "🟡 Iniciando"
-
 
 def exibir_metricas_completas(db_path: str = "omie.db") -> None:
     """
