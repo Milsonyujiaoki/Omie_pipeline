@@ -31,3 +31,5 @@ DEV/05_INTEGRACOES
 Utilitarios/05_Testes_Organizados/Funcionalidade/test_Teste-envio-api 1.py
 backup_uploads
 src/__pycache__
+configuracao.ini
+configuracao.ini

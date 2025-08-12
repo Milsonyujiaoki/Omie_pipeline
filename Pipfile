@@ -1,0 +1,80 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+# Dependências assíncronas e HTTP
+aiohttp = "*"
+aiosqlite = "*"
+aiofiles = "*"
+asyncio = "*"
+
+# HTTP requests e APIs
+requests = "*"
+
+# Manipulação de dados e Excel
+openpyxl = "*"
+pandas = "*"
+
+# Configuração e ambiente
+python-dotenv = "*"
+
+# Validação de dados e tipos
+pydantic = "*"
+
+# Logging estruturado
+structlog = "*"
+
+# Testes
+pytest = "*"
+pytest-asyncio = "*"
+
+# Utilitários de desenvolvimento
+black = "*"
+isort = "*"
+mypy = "*"
+
+[dev-packages]
+# Ferramentas de desenvolvimento
+flake8 = "*"
+pre-commit = "*"
+pytest-cov = "*"
+
+# Debugging
+ipython = "*"
+ipdb = "*"
+
+# Documentação
+sphinx = "*"
+
+[requires]
+python_version = "3.9"
+
+[scripts]
+# Script para execução do pipeline principal
+pipeline = "python main_old.py"
+
+# Scripts para módulos específicos
+extrator = "python src/extractor_async.py"
+verificador = "python src/verificador_xmls.py"
+compactador = "python src/compactador_resultado.py"
+upload = "python src/upload_onedrive.py"
+
+# Scripts de utilidades
+atualizar-caminhos = "python src/atualizar_caminhos_arquivos.py"
+atualizar-datas = "python src/atualizar_query_params_ini.py"
+relatorio-vazios = "python src/report_arquivos_vazios.py"
+
+# Scripts de teste e validação
+test = "pytest tests/ -v"
+test-cov = "pytest tests/ --cov=src --cov-report=html"
+lint = "flake8 src/ tests/"
+format = "black src/ tests/ && isort src/ tests/"
+typecheck = "mypy src/"
+
+# Script para configurar ambiente
+setup = "python -c 'from src.utils import iniciar_db; iniciar_db()'"
+
+# Script para limpeza de cache
+clean-cache = "python -c 'from src.utils import limpar_cache_indexacao_xmls; limpar_cache_indexacao_xmls()'"
