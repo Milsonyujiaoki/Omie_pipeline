@@ -577,28 +577,40 @@ def _executar_async_com_config(config: Dict[str, Any]) -> None:
         # Import local para evitar dependência circular
         from src.extrator_async import baixar_xmls, listar_nfs
         from src.omie_client_async import OmieClient, carregar_configuracoes_client
-        config = carregar_configuracoes_client()
+        
+        # CORREÇÃO: Não sobrescrever a config passada como parâmetro
+        # Usar config completa do omie_client_async mas manter parâmetros customizados
+        config_client = carregar_configuracoes_client()
+        
+        # Mesclar configurações - prioridade para config passada como parâmetro
+        config_merged = {**config_client, **config}
+        
         # Credenciais e URLs da API Omie
         # Validar que as chaves obrigatórias existem
-        app_key = config.get('app_key')
-        app_secret = config.get('app_secret')
+        app_key = config_merged.get('app_key')
+        app_secret = config_merged.get('app_secret')
         
         if not app_key or not app_secret:
             raise ValueError("app_key e app_secret são obrigatórios no arquivo de configuração")
             
-        for v, k in config.items():
+        for v, k in config_merged.items():
             logger.info(f"[ASYNC.CONFIG] Configurações carregadas com sucesso {v}: {k}")
 
-        # Criar cliente com configurações
+        # CORREÇÃO: Criar cliente com TODAS as configurações necessárias
         client = OmieClient(
             app_key=app_key,
             app_secret=app_secret,
-            calls_per_second=config.get('calls_per_second', 4)
+            calls_per_second=config_merged.get('calls_per_second', 4),
+            base_url_nf=config_merged.get('base_url_nf', 'https://app.omie.com.br/api/v1/produtos/nfconsultar/'),
+            base_url_xml=config_merged.get('base_url_xml', 'https://app.omie.com.br/api/v1/produtos/dfedocs/')
         )
         
         # Executar pipeline assíncrono
         import asyncio
-        asyncio.run(_pipeline_async_completo(client, config))
+        
+        # CORREÇÃO: Usar abordagem mais simples e direta
+        logger.info("[ASYNC.CONFIG] Iniciando pipeline assíncrono...")
+        asyncio.run(_pipeline_async_completo(client, config_merged))
         
     except Exception as e:
         logger.exception(f"[ASYNC.CONFIG] Erro durante execução async: {e}")
@@ -612,18 +624,36 @@ async def _pipeline_async_completo(client, config: Dict[str, Any]) -> None:
     
     resolver = inicializar_path_resolver()
     db_name = str(resolver.get_path_by_key("db_name"))
+    
+    # DEBUG: Comparar com o que o extrator_async standalone faria
+    db_name_fallback = config.get("db_name", "omie.db")
+    logger.info(f"[PIPELINE.ASYNC.DEBUG] db_name via resolver: {db_name}")
+    logger.info(f"[PIPELINE.ASYNC.DEBUG] db_name via config (como standalone): {db_name_fallback}")
+    
     t1 = time.time()
     logger.info("[PIPELINE.ASYNC] Iniciando pipeline assíncrono completo")
     logger.info(f"[PIPELINE.ASYNC] iniciando iniciar banco de dados: {db_name}")
 
     # Inicializar banco
-    iniciar_db(db_name)
+    # CORREÇÃO: Usar TABLE_NAME como no extrator_async standalone
+    from src.extrator_async import TABLE_NAME
+    iniciar_db(db_name, TABLE_NAME)
     t2 = time.time()
     logger.info(f"[PIPELINE.ASYNC] Banco de dados inicializado em {formatar_tempo_total(t2 - t1)} ({t2 - t1:.2f}s)")
     logger.info("[PIPELINE.ASYNC] Iniciando listagem e download de notas fiscais assíncronos")
     t3 = time.time()
     # Lista as notas fiscais da API Omie e salva no banco de dados
-    await listar_nfs(client, config, db_name)
+    logger.info(f"[PIPELINE.ASYNC.DEBUG] Iniciando listar_nfs com config: start_date={config.get('start_date')}, end_date={config.get('end_date')}")
+    logger.info(f"[PIPELINE.ASYNC.DEBUG] Client configurado: app_key={client.app_key[:10]}..., calls_per_second={client.calls_per_second}")
+    logger.info("[PIPELINE.ASYNC.DEBUG] Antes de chamar listar_nfs...")
+    
+    try:
+        await listar_nfs(client, config, db_name)
+        logger.info("[PIPELINE.ASYNC.DEBUG] listar_nfs completou com sucesso!")
+    except Exception as e:
+        logger.exception(f"[PIPELINE.ASYNC.DEBUG] Erro em listar_nfs: {e}")
+        raise
+        
     t4 = time.time()
     logger.info(f"[PIPELINE.ASYNC] Listagem concluída em {formatar_tempo_total(t4 - t3)} ({t4 - t3:.2f}s)")
     

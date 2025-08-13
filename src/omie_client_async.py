@@ -64,6 +64,7 @@ class OmieClient:
         """
         self.app_key = app_key
         self.app_secret = app_secret
+        self.calls_per_second = calls_per_second  # Armazenar para referência
         self.base_url_nf = base_url_nf
         self.base_url_xml = base_url_xml
         self.semaphore = asyncio.Semaphore(calls_per_second)  # Limita concorrência simultânea
@@ -100,8 +101,19 @@ class OmieClient:
         # Define a URL correta com base no tipo de chamada
         url = self.base_url_nf if metodo == "ListarNF" else self.base_url_xml
 
+        # Timeout mais robusto baseado no tipo de operação - valores do arquivo de configuração
+        timeout_connect = 30  # Tempo para estabelecer conexão
+        timeout_total = 600   # Timeout total configurable (10 minutos)
+        timeout_sock_read = 300  # Timeout para leitura de dados (5 minutos)
+        
+        timeout = aiohttp.ClientTimeout(
+            total=timeout_total,
+            connect=timeout_connect,
+            sock_read=timeout_sock_read
+        )
+
         async with self.semaphore:  # Limita chamadas simultâneas
-            async with session.post(url, json=payload, timeout=60) as response:
+            async with session.post(url, json=payload, timeout=timeout) as response:
                 response.raise_for_status()
                 resultado = await response.json()
                 if not isinstance(resultado, dict):

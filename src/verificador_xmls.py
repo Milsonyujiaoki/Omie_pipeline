@@ -16,8 +16,10 @@ Autor:
 import os
 import sqlite3
 import logging
+from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional, Tuple, List
 import sys
 
 # Adiciona o diretório atual ao path para importar utils
@@ -38,15 +40,15 @@ logger = logging.getLogger(__name__)
 
 # Log da configuração na inicialização do módulo
 if logger.isEnabledFor(logging.DEBUG):
-    logger.debug(f"[INIT] Módulo verificador_xmls inicializado")
-    logger.debug(f"[INIT] USE_OPTIMIZED_VERSION: {USE_OPTIMIZED_VERSION}")
-    logger.debug(f"[INIT] MAX_WORKERS: {MAX_WORKERS}")
+    logger.debug(f"[VERIFICADOR.XMLS.INIT] Módulo verificador_xmls inicializado")
+    logger.debug(f"[VERIFICADOR.XMLS.INIT] USE_OPTIMIZED_VERSION: {USE_OPTIMIZED_VERSION}")
+    logger.debug(f"[VERIFICADOR.XMLS.INIT] MAX_WORKERS: {MAX_WORKERS}")
 
 # ------------------------------------------------------------------------------
 # verificacao de existência de arquivos XML
 # ------------------------------------------------------------------------------
 
-def verificar_arquivo_no_disco(row: tuple[str, str, str]) -> str | None:
+def verificar_arquivo_no_disco(row: Tuple[str, str, str]) -> Optional[str]:
     """
     Verifica se o XML correspondente à nota existe no disco e possui conteudo valido (> 0 bytes).
 
@@ -62,7 +64,7 @@ def verificar_arquivo_no_disco(row: tuple[str, str, str]) -> str | None:
     chave, dEmi, num_nfe = row
 
     if not chave or not dEmi or not num_nfe:
-        logger.warning(f"[IGNORADO] Campos ausentes para chave: {chave} | {dEmi} | {num_nfe}")
+        logger.warning(f"[VERIFICADOR.XMLS.VALIDACAO] Campos ausentes para chave: {chave} | {dEmi} | {num_nfe}")
         return None
 
     try:
@@ -77,7 +79,7 @@ def verificar_arquivo_no_disco(row: tuple[str, str, str]) -> str | None:
             return chave
         return None
     except Exception as e:
-        logger.warning(f"[ERRO] Falha ao verificar arquivo da chave {chave}: {e}")
+        logger.warning(f"[VERIFICADOR.XMLS.ARQUIVO.ERRO] Falha ao verificar arquivo da chave {chave}: {e}")
         return None
 
 # ------------------------------------------------------------------------------
@@ -88,7 +90,7 @@ def verificar_arquivos_existentes(
     db_path: str = DB_PATH,
     max_workers: int = MAX_WORKERS,
     batch_size: int = 500
-) -> list[str]:
+) -> List[str]:
     """
     Carrega todos os registros do banco e verifica quais arquivos XML ja estoo salvos e validos no disco.
 
@@ -104,16 +106,16 @@ def verificar_arquivos_existentes(
         Exception: Se ocorrer erro inesperado durante a verificacao.
     """
     versao_funcao = "OTIMIZADA" if USE_OPTIMIZED_VERSION else "ORIGINAL"
-    logger.info(f"[DISCO] Iniciando verificacao de arquivos XML no disco... (versão {versao_funcao})")
-    logger.info(f"[DISCO] Configuração: workers={max_workers}, batch={batch_size}")
+    logger.info(f"[VERIFICADOR.XMLS.DISCO.INICIO] Iniciando verificacao de arquivos XML no disco... (versão {versao_funcao})")
+    logger.info(f"[VERIFICADOR.XMLS.DISCO.CONFIG] Configuração: workers={max_workers:,}, batch={batch_size:,}")
 
     with sqlite3.connect(db_path) as conn:
-        rows: list[tuple[str, str, str]] = conn.execute(
+        rows: List[Tuple[str, str, str]] = conn.execute(
             f"SELECT cChaveNFe, dEmi, nNF FROM {TABLE_NAME}"
         ).fetchall()
 
     total = len(rows)
-    logger.info(f"[DISCO] Total de notas no banco: {total:,}")
+    logger.info(f"[VERIFICADOR.XMLS.DISCO.TOTAL] Total de notas no banco: {total:,}")
     
     # Determina intervalos de log baseados no volume de dados
     if total < 1000:
@@ -125,9 +127,9 @@ def verificar_arquivos_existentes(
     else:
         progress_interval = 50000  # Log a cada 50.000 verificações (alto volume)
     
-    logger.info(f"[DISCO] Configuração de progresso otimizada: intervalo de {progress_interval:,} verificações")
+    logger.info(f"[VERIFICADOR.XMLS.DISCO.PROGRESSO] Configuração de progresso otimizada: intervalo de {progress_interval:,} verificações")
 
-    chaves_validas: list[str] = []
+    chaves_validas: List[str] = []
     import time
     inicio_verificacao = time.time()
     
@@ -145,14 +147,14 @@ def verificar_arquivos_existentes(
                     percentual = (idx / total) * 100
                     velocidade = idx / tempo_decorrido if tempo_decorrido > 0 else 0
                     
-                    logger.info(f"[PROGRESSO] ✓ {idx:,}/{total:,} verificados ({percentual:.1f}%) - "
+                    logger.info(f"[VERIFICADOR.XMLS.DISCO.PROGRESSO] ✓ {idx:,}/{total:,} verificados ({percentual:.1f}%) - "
                                f"Válidos: {len(chaves_validas):,} - Velocidade: {velocidade:.0f} verif/s")
             except Exception as e:
-                logger.error(f"[DISCO] Erro ao processar verificacao paralela: {e}")
+                logger.error(f"[VERIFICADOR.XMLS.DISCO.ERRO] Erro ao processar verificacao paralela: {e}")
 
     taxa_sucesso = (len(chaves_validas) / total) * 100 if total > 0 else 0
-    logger.info(f"[DISCO] XMLs validos encontrados: {len(chaves_validas)} ({taxa_sucesso:.2f}%)")
-    logger.info(f"[DISCO] Função utilizada: {versao_funcao}")
+    logger.info(f"[VERIFICADOR.XMLS.DISCO.RESULTADO] ✅ XMLs validos encontrados: {len(chaves_validas):,} ({taxa_sucesso:.2f}%)")
+    logger.info(f"[VERIFICADOR.XMLS.DISCO.METODO] Função utilizada: {versao_funcao}")
     
     return chaves_validas
 
@@ -162,7 +164,7 @@ def verificar_arquivos_existentes(
 
 
 def atualizar_status_no_banco(
-    chaves: list[str],
+    chaves: List[str],
     db_path: str = DB_PATH,
     batch_size: int = 500
 ) -> None:
@@ -182,7 +184,11 @@ def atualizar_status_no_banco(
         return
 
     total = len(chaves)
-    logger.info(f"[BANCO] Iniciando atualizacao de {total:,} registros em lotes de {batch_size}...")
+    if total == 0:
+        logger.info("[VERIFICADOR.XMLS.BANCO.VAZIO] Nenhuma chave para atualizar - processo concluído")
+        return
+        
+    logger.info(f"[VERIFICADOR.XMLS.BANCO.INICIO] Iniciando atualizacao de {total:,} registros em lotes de {batch_size:,}...")
     
     # Determina intervalos de log baseados no volume de dados
     if total < 1000:
@@ -194,7 +200,7 @@ def atualizar_status_no_banco(
     else:
         log_interval = 100000  # Log a cada 100.000 registros (alto volume)
 
-    logger.info(f"[BANCO] Configuração de log otimizada: intervalo de {log_interval:,} registros")
+    logger.info(f"[VERIFICADOR.XMLS.BANCO.CONFIG] Configuração de log otimizada: intervalo de {log_interval:,} registros")
     
     try:
         import time
@@ -221,17 +227,34 @@ def atualizar_status_no_banco(
                 percentual = (registros_atualizados / total) * 100
                 velocidade = registros_atualizados / tempo_decorrido if tempo_decorrido > 0 else 0
                 
-                logger.info(f"[BANCO] ✓ {registros_atualizados:,}/{total:,} registros ({percentual:.1f}%) - "
+                logger.info(f"[VERIFICADOR.XMLS.BANCO.PROGRESSO] ✓ {registros_atualizados:,}/{total:,} registros ({percentual:.1f}%) - "
                            f"Velocidade: {velocidade:.0f} reg/s")
+        
+        def _formatar_tempo_total(segundos: float) -> str:
+            """Converte segundos em formato legível."""
+            if segundos < 0:
+                return "0s"
+            
+            horas = int(segundos // 3600)
+            minutos = int((segundos % 3600) // 60)
+            segs = int(segundos % 60)
+            
+            if horas > 0:
+                return f"{horas}h {minutos}m {segs}s"
+            elif minutos > 0:
+                return f"{minutos}m {segs}s"
+            else:
+                return f"{segs}s"
         
         tempo_total = time.time() - inicio_batch
         velocidade_final = total / tempo_total if tempo_total > 0 else 0
         
-        logger.info(f"[BANCO] ✅ {total:,} registros atualizados com sucesso em {tempo_total:.1f}s "
-                   f"(Velocidade média: {velocidade_final:.0f} reg/s)")
+        logger.info(f"[VERIFICADOR.XMLS.BANCO.SUCESSO] ✅ {total:,} registros atualizados com sucesso em {_formatar_tempo_total(tempo_total)} ({tempo_total:.1f}s) - "
+                   f"Velocidade média: {velocidade_final:.0f} reg/s")
                    
     except Exception as e:
-        logger.exception(f"[BANCO] Falha ao atualizar registros: {e}")
+        logger.error(f"[VERIFICADOR.XMLS.BANCO.ERRO] Falha ao atualizar registros: {e}")
+        logger.exception("Detalhes do erro:")
 
 
 
@@ -262,15 +285,31 @@ def verificar(
     import time
     from utils import obter_estatisticas_cache, limpar_cache_indexacao_xmls
     
+    def _formatar_tempo_total(segundos: float) -> str:
+        """Converte segundos em formato legível."""
+        if segundos < 0:
+            return "0s"
+        
+        horas = int(segundos // 3600)
+        minutos = int((segundos % 3600) // 60)
+        segs = int(segundos % 60)
+        
+        if horas > 0:
+            return f"{horas}h {minutos}m {segs}s"
+        elif minutos > 0:
+            return f"{minutos}m {segs}s"
+        else:
+            return f"{segs}s"
+    
     inicio = time.time()
-    logger.info("[VERIFICACAO] Iniciando verificacao de XMLs no disco...")
-    logger.info(f"[VERIFICACAO] Configuracao: otimizado={USE_OPTIMIZED_VERSION}, workers={max_workers}")
+    logger.info("[VERIFICADOR.XMLS.INICIO] Iniciando verificacao de XMLs no disco...")
+    logger.info(f"[VERIFICADOR.XMLS.CONFIG] Configuração: otimizado={USE_OPTIMIZED_VERSION}, workers={max_workers:,}, batch={batch_size:,}")
     
     # Limpa cache anterior se necessário (opcional - apenas para debug)
     if logger.isEnabledFor(logging.DEBUG):
         stats_inicial = obter_estatisticas_cache()
         if stats_inicial['directories_cached'] > 0:
-            logger.debug(f"[VERIFICACAO] Cache existente: {stats_inicial}")
+            logger.debug(f"[VERIFICADOR.XMLS.CACHE] Cache existente: {stats_inicial}")
     
     # Executa verificação
     chaves_com_arquivo = verificar_arquivos_existentes(db_path=db_path, max_workers=max_workers, batch_size=batch_size)
@@ -280,12 +319,18 @@ def verificar(
     fim = time.time()
     tempo_total = fim - inicio
     
-    logger.info("[VERIFICACAO] Processo de verificacao finalizado.")
-    logger.info(f"[VERIFICACAO] Tempo total: {tempo_total:.2f}s")
+    logger.info("[VERIFICADOR.XMLS.SUCESSO] ✅ Processo de verificacao finalizado com sucesso")
+    logger.info(f"[VERIFICADOR.XMLS.TEMPO] Tempo total: {_formatar_tempo_total(tempo_total)} ({tempo_total:.2f}s)")
     
     if USE_OPTIMIZED_VERSION:
         stats_final = obter_estatisticas_cache()
-        logger.info(f"[VERIFICACAO] Estatisticas de cache:")
+        logger.info(f"[VERIFICADOR.XMLS.CACHE.STATS] Estatísticas de cache:")
+        logger.info(f"  • Cache hits: {stats_final.get('hits', 0):,}")
+        logger.info(f"  • Cache misses: {stats_final.get('misses', 0):,}")
+        logger.info(f"  • Diretórios indexados: {stats_final.get('directories_cached', 0):,}")
+        if stats_final.get('hits', 0) + stats_final.get('misses', 0) > 0:
+            taxa_hit = (stats_final.get('hits', 0) / (stats_final.get('hits', 0) + stats_final.get('misses', 0))) * 100
+            logger.info(f"  • Taxa de hit do cache: {taxa_hit:.1f}%")
         logger.info(f"[VERIFICACAO]   Diretorios indexados: {stats_final['directories_indexed']}")
         logger.info(f"[VERIFICACAO]   Arquivos em cache: {stats_final['total_files_cached']}")
         logger.info(f"[VERIFICACAO]   Cache hits: {stats_final['cache_hits']}")
@@ -296,16 +341,24 @@ def verificar(
 # ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # Configura logging para ver a execução
+    # Criação do diretório
+    log_dir = Path("log")
+    log_dir.mkdir(exist_ok=True)
+    
+    # Timestamp único
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_file = log_dir / f"extrator_async_{timestamp}.log" 
+
+    # Configuração básica de logging para acompanhar execução
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler('log/verificador_xmls.log')
+            logging.FileHandler(log_file, encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
         ]
     )
-    
+
     # Ajusta o caminho do banco conforme o diretório de execução
     import os
     if os.path.basename(os.getcwd()) == 'src':

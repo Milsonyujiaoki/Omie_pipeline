@@ -57,8 +57,9 @@ def _carregar_configuracoes_extrator():
             'calls_per_second': config.getint('concorrencia', 'calls_per_second_global', fallback=4),
             'max_concurrent': config.getint('concorrencia', 'max_concurrent', fallback=4),
             'intervalo_minimo': config.getfloat('concorrencia', 'intervalo_minimo_requisicoes', fallback=0.25),
-            'timeout_conexao': config.getint('retry', 'timeout_conexao', fallback=60),
-            'max_retries': config.getint('retry', 'max_retries', fallback=3),
+            'timeout_conexao': config.getint('retry', 'timeout_conexao', fallback=3600),
+            'timeout_total': config.getint('retry', 'timeout_total', fallback=600),
+            'max_retries': config.getint('retry', 'max_retries', fallback=5),
             'sqlite_cache_size': config.getint('cache', 'sqlite_cache_size', fallback=-64000),
             'sqlite_mmap_size': config.getint('cache', 'sqlite_mmap_size', fallback=268435456),
         }
@@ -68,8 +69,9 @@ def _carregar_configuracoes_extrator():
             'calls_per_second': 4,
             'max_concurrent': 4,
             'intervalo_minimo': 0.25,
-            'timeout_conexao': 60,
-            'max_retries': 3,
+            'timeout_conexao': 3600,
+            'timeout_total': 600,
+            'max_retries': 5,
             'sqlite_cache_size': -64000,
             'sqlite_mmap_size': 268435456,
         }
@@ -125,7 +127,7 @@ def normalizar_nota(nf: Dict[str, Any]) -> Dict[str, Any]:
             "vNF": float(nf["total"]["ICMSTot"].get("vNF") or 0),
         }
     except Exception as exc:
-        logger.warning("[NORMALIZAR] Falha ao normalizar nota: %s", exc)
+        logger.warning("[EXTRATOR.ASYNC.NORMALIZAR] Falha ao normalizar nota: %s", exc)
         return {}
 
 
@@ -136,9 +138,8 @@ async def call_api(
     payload: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
     """
-    Função síncrona para chamada de API com retentativas e backoff.
+    Função assíncrona para chamada de API com retentativas e backoff para TimeoutError.
     """
-    import time
     max_retentativas = _config_extrator['max_retries']
     for tentativa in range(1, max_retentativas + 1):
         try:
@@ -146,22 +147,36 @@ async def call_api(
             return await client.call_api(session, metodo, payload)
 
         except asyncio.TimeoutError as exc:
-            logger.warning("[RETRY] Timeout - Esperando %ss (tentativa %s)", 10 * tentativa, tentativa)
-            await asyncio.sleep(5 * tentativa)
+            # Tratamento específico para timeout - aumenta o tempo de espera progressivamente
+            tempo_espera = min(30 * tentativa, 180)  # Max 3 minutos entre tentativas
+            logger.warning("[EXTRATOR.ASYNC.API.RETRY] TimeoutError - Tentativa %d/%d falhou - Esperando %ds...", 
+                         tentativa, max_retentativas, tempo_espera)
+            if tentativa < max_retentativas:
+                await asyncio.sleep(tempo_espera)
+                continue
+            else:
+                logger.error("[EXTRATOR.ASYNC.API.TIMEOUT] Timeout persistente após %d tentativas", max_retentativas)
+                raise
+
         except asyncio.CancelledError as exc:
-            logger.warning("[RETRY] CancelledError - Esperando %ss (tentativa %s)", 5 * tentativa, tentativa)
-            await asyncio.sleep(5 * tentativa)
+            tempo_espera = 10 * tentativa
+            logger.warning("[EXTRATOR.ASYNC.API.CANCELLED] CancelledError - Esperando %ss (tentativa %s)", tempo_espera, tentativa)
+            if tentativa < max_retentativas:
+                await asyncio.sleep(tempo_espera)
+                continue
+            else:
+                raise
 
         except aiohttp.ClientResponseError as exc:
             if exc.status == 429:
                 tempo_espera = 2**tentativa
                 logger.warning(
-                    "[RETRY] 429 - Esperando %ss (tentativa %s)", tempo_espera, tentativa
+                    "[EXTRATOR.ASYNC.API.RATE_LIMIT] 429 Rate Limit - Esperando %ss (tentativa %s)", tempo_espera, tentativa
                 )
-                time.sleep(tempo_espera)
+                await asyncio.sleep(tempo_espera)
             
-            if exc.status == 403:
-                logger.error("[API] Permissão negada (403 Forbidden): %s", exc)
+            elif exc.status == 403:
+                logger.error("[EXTRATOR.ASYNC.API.FORBIDDEN] Permissão negada (403 Forbidden): %s", exc)
                 raise RuntimeError(
                     "Permissão negada pela API Omie (403 Forbidden). "
                     "Verifique app_key, app_secret, permissões do app e se o endpoint está correto."
@@ -171,18 +186,30 @@ async def call_api(
                 logger.error("[API] Recurso não encontrado: %s", exc)
                 raise
             elif exc.status >= 500:
-                tempo_espera = 1 + tentativa
+                tempo_espera = min(30 + (10 * tentativa), 120)  # Max 2 minutos
                 logger.warning(
-                    "[RETRY] %s - Erro servidor. Tentativa %s", exc.status, tentativa
+                    "[RETRY] %s - Erro servidor. Tentativa %s/%s - Esperando %ds", 
+                    exc.status, tentativa, max_retentativas, tempo_espera
                 )
-                time.sleep(tempo_espera)
+                if tentativa < max_retentativas:
+                    await asyncio.sleep(tempo_espera)
+                    continue
+                else:
+                    raise
             else:
                 logger.error("[API] Falha irreversivel: %s", exc)
                 raise
 
         except Exception as exc:
             logger.error("[API] Erro inesperado: %s", exc)
-            raise
+            if tentativa < max_retentativas:
+                tempo_espera = 2 * tentativa
+                logger.warning("[RETRY] Erro inesperado - Tentativa %s/%s - Esperando %ds", 
+                             tentativa, max_retentativas, tempo_espera)
+                await asyncio.sleep(tempo_espera)
+                continue
+            else:
+                raise
 
     raise RuntimeError(f"[API] Falha apos {max_retentativas} tentativas para {metodo}")
 
@@ -209,11 +236,11 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
             await cursor.close()
             
             if not registros:
-                logger.info("[ANOMESDIA] Nenhum registro para atualizar")
+                logger.info("[EXTRATOR.ASYNC.ANOMESDIA.VAZIO] Nenhum registro para atualizar")
                 return 0
             
             registros_list = list(registros)  # Converte para lista para usar len()
-            logger.info(f"[ANOMESDIA] Processando {len(registros_list)} registros...")
+            logger.info(f"[EXTRATOR.ASYNC.ANOMESDIA.INICIO] Processando {len(registros_list):,} registros...")
             atualizacoes = []
             erros = 0
             for chave, dEmi in registros_list:
@@ -226,10 +253,10 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
                         anomesdia = int(f"{ano}{mes}{dia}")
                         atualizacoes.append((anomesdia, anomes, chave))
                     else:
-                        logger.warning(f"[ANOMESDIA] Data inválida para chave {chave}: {dEmi}")
+                        logger.warning(f"[EXTRATOR.ASYNC.ANOMESDIA.DATA] Data inválida para chave {chave}: {dEmi}")
                         erros += 1
                 except Exception as e:
-                    logger.warning(f"[ANOMESDIA] Erro ao processar {chave}: {e}")
+                    logger.warning(f"[EXTRATOR.ASYNC.ANOMESDIA.ERRO] Erro ao processar {chave}: {e}")
                     erros += 1
             if atualizacoes:
                 await conn.executemany(f"""
@@ -239,23 +266,45 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
                 """, atualizacoes)
                 await conn.commit()
                 atualizados = len(atualizacoes)
-                logger.info(f"[ANOMESDIA] ✓ {atualizados} registros atualizados")
+                logger.info(f"[EXTRATOR.ASYNC.ANOMESDIA.SUCESSO] ✓ {atualizados:,} registros atualizados")
                 if erros > 0:
-                    logger.warning(f"[ANOMESDIA] ⚠ {erros} registros com erro")
+                    logger.warning(f"[EXTRATOR.ASYNC.ANOMESDIA.ALERTAS] ⚠ {erros:,} registros com erro")
                 return atualizados
             else:
-                logger.info("[ANOMESDIA] Nenhuma atualização válida encontrada")
+                logger.info("[EXTRATOR.ASYNC.ANOMESDIA.RESULTADO] Nenhuma atualização válida encontrada")
                 return 0
     except aiosqlite.Error as e:
-        logger.error(f"[ANOMESDIA] Erro de banco: {e}")
+        logger.error(f"[EXTRATOR.ASYNC.ANOMESDIA.DB.ERRO] Erro de banco: {e}")
         return 0
     except Exception as e:
-        logger.error(f"[ANOMESDIA] Erro inesperado: {e}")
+        logger.error(f"[EXTRATOR.ASYNC.ANOMESDIA.INESPERADO] Erro inesperado: {e}")
         return 0
 
 
 async def listar_nfs(client: OmieClient, config: Dict[str, Any], db_name: str) -> None:
-    logger.info("[EXTRATOR.ASYNC.LISTAR.NFS] Iniciando listagem de notas fiscais...")
+    def _formatar_tempo_total(segundos: float) -> str:
+        """Converte segundos em formato legível."""
+        if segundos < 0:
+            return "0s"
+        
+        horas = int(segundos // 3600)
+        minutos = int((segundos % 3600) // 60)
+        segs = int(segundos % 60)
+        
+        if horas > 0:
+            return f"{horas}h {minutos}m {segs}s"
+        elif minutos > 0:
+            return f"{minutos}m {segs}s"
+        else:
+            return f"{segs}s"
+    
+    logger.info("[EXTRATOR.ASYNC.NFS.INICIO] Iniciando listagem de notas fiscais...")
+    
+    # Log das configurações de timeout para debug
+    logger.info(f"[EXTRATOR.ASYNC.NFS.CONFIG] Timeout configurado: {_config_extrator.get('timeout_total', 600):,}s total")
+    logger.info(f"[EXTRATOR.ASYNC.NFS.CONFIG] Max retries: {_config_extrator.get('max_retries', 5)}")
+    logger.info(f"[EXTRATOR.ASYNC.NFS.CONFIG] Período: {config.get('start_date')} a {config.get('end_date')}")
+    logger.info(f"[EXTRATOR.ASYNC.NFS.CONFIG] Registros por página: {config.get('records_per_page', 200):,}")
 
     try:
         from src.utils import _verificar_views_e_indices_disponiveis
@@ -282,13 +331,14 @@ async def listar_nfs(client: OmieClient, config: Dict[str, Any], db_name: str) -
                 "ordenar_por": "CODIGO",
             }
             try:
-                data = await client.call_api(session, "ListarNF", payload)
+                data = await call_api(client, session, "ListarNF", payload)
                 if data is None:
-                    logger.warning("[NFS] Resposta nula da API para página %s", pagina)
+                    logger.warning("[EXTRATOR.ASYNC.NFS.API] Resposta nula da API para página %s", pagina)
                     return 0
                 
                 notas = data.get("nfCadastro", [])
                 if not notas:
+                    logger.warning("[EXTRATOR.ASYNC.NFS.API] Nenhuma nota encontrada para página %s", pagina)
                     logger.info("[NFS] Pagina %s sem notas.", pagina)
                     return 0
 
@@ -302,14 +352,16 @@ async def listar_nfs(client: OmieClient, config: Dict[str, Any], db_name: str) -
                     lambda: salvar_varias_notas(registros, db_name)
                 )
                 total_registros_processados = resultado_salvamento.get('total_processados', len(registros))
-                logger.info("[NFS] Pagina %s processada (%s registros).", pagina, total_registros_processados)
+                logger.info("[EXTRATOR.ASYNC.NFS.PAGINA] ✓ Página %s processada - %s registros salvos", pagina, total_registros_processados)
                 inseridos = resultado_salvamento.get('inseridos', len(registros))
                 return inseridos if isinstance(inseridos, int) else len(registros)
             except Exception as exc:
-                logger.exception("[NFS] Erro na listagem pagina %s: %s", pagina, exc)
+                logger.error("[EXTRATOR.ASYNC.NFS.ERRO] Erro na listagem página %s: %s", pagina, exc)
                 return 0
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=360)) as session:
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=600, connect=30, sock_read=300)  # 10 min total, 5 min leitura
+    ) as session:
         # Descobrir o total de páginas primeiro
         payload_inicial = {
             "pagina": 1,
@@ -323,20 +375,33 @@ async def listar_nfs(client: OmieClient, config: Dict[str, Any], db_name: str) -
             "cApenasResumo": "S",
             "ordenar_por": "CODIGO",
         }
-        data_inicial = await client.call_api(session, "ListarNF", payload_inicial)
+        data_inicial = await call_api(client, session, "ListarNF", payload_inicial)
         if data_inicial is None:
-            logger.error("[NFS] Falha ao obter informações iniciais da API")
+            logger.error("[EXTRATOR.ASYNC.NFS.API.ERRO] Falha ao obter informações iniciais da API")
             return
         
         total_paginas = data_inicial.get("total_de_paginas", 1)
-        logger.info(f"[NFS] Total de páginas a processar: {total_paginas}")
+        total_registros_esperados = data_inicial.get("total_de_registros", 0)
+        logger.info(f"[EXTRATOR.ASYNC.NFS.DESCOBERTA] Total de páginas a processar: {total_paginas:,}")
+        logger.info(f"[EXTRATOR.ASYNC.NFS.DESCOBERTA] Total de registros esperados: {total_registros_esperados:,}")
 
         semaphore = asyncio.Semaphore(2)  # Limite de 2 requisições concorrentes
+        logger.info("[EXTRATOR.ASYNC.NFS.PROCESSAMENTO] Iniciando processamento paralelo das páginas...")
+        
+        inicio_processamento = time.time()
         tasks = [processar_pagina(p, semaphore, session) for p in range(1, total_paginas + 1)]
         resultados = await asyncio.gather(*tasks)
+        fim_processamento = time.time()
+        
         total_registros_salvos = sum(r for r in resultados if isinstance(r, int))
+        tempo_processamento = fim_processamento - inicio_processamento
 
-    logger.info(f"[NFS] Listagem concluida. {total_registros_salvos} registros processados.")
+    logger.info(f"[EXTRATOR.ASYNC.NFS.SUCESSO] ✅ Listagem concluída com sucesso")
+    logger.info(f"[EXTRATOR.ASYNC.NFS.RESULTADO] • Total de registros processados: {total_registros_salvos:,}")
+    logger.info(f"[EXTRATOR.ASYNC.NFS.TEMPO] • Tempo de processamento: {_formatar_tempo_total(tempo_processamento)} ({tempo_processamento:.2f}s)")
+    if tempo_processamento > 0:
+        velocidade = total_registros_salvos / tempo_processamento
+        logger.info(f"[EXTRATOR.ASYNC.NFS.PERFORMANCE] • Velocidade média: {velocidade:.0f} registros/s")
     
 async def baixar_xml_individual(
     session: aiohttp.ClientSession,
@@ -369,40 +434,60 @@ async def baixar_xml_individual(
             pasta.mkdir(parents=True, exist_ok=True)
             baixado_novamente = caminho.exists()
 
-            data = await client.call_api(session, "ObterNfe", {"nIdNfe": nIdNF})
+            data = await call_api(client, session, "ObterNfe", {"nIdNfe": nIdNF})
             if data is None:
-                logger.warning(f"[XML] Resposta nula da API para chave {chave}")
+                logger.warning(f"[EXTRATOR.ASYNC.XML.API] Resposta nula da API para chave {chave}")
                 return
             
             xml_str = html.unescape(data.get("cXmlNfe", ""))
 
             if not xml_str.strip():
-                logger.warning(f"[XML] XML vazio recebido para chave {chave}. Não será salvo.")
+                logger.warning(f"[EXTRATOR.ASYNC.XML.VAZIO] XML vazio recebido para chave {chave} - não será salvo")
                 atualizar_status_xml(db_name, chave, caminho, xml_str, baixado_novamente, xml_vazio=1)
             else:
                 async with aiofiles.open(caminho, "w", encoding="utf-8") as f:
                     await f.write(xml_str)
                 atualizar_status_xml(db_name, chave, caminho, xml_str, baixado_novamente)
+                logger.debug(f"[EXTRATOR.ASYNC.XML.SUCESSO] ✓ XML salvo: {chave}")
                 logger.info("[XML] XML salvo: %s", caminho)
         except Exception as exc:
-            logger.error("[XML] Falha ao baixar XML %s: %s", chave, exc)
+            logger.error("[EXTRATOR.ASYNC.XML.ERRO] Falha ao baixar XML %s: %s", chave, exc)
 
 
 async def baixar_xmls(client: OmieClient, db_name: str, db_path: str = "omie.db"):
-    logger.info("[XML] Iniciando download de XMLs pendentes...")
+    def _formatar_tempo_total(segundos: float) -> str:
+        """Converte segundos em formato legível."""
+        if segundos < 0:
+            return "0s"
+        
+        horas = int(segundos // 3600)
+        minutos = int((segundos % 3600) // 60)
+        segs = int(segundos % 60)
+        
+        if horas > 0:
+            return f"{horas}h {minutos}m {segs}s"
+        elif minutos > 0:
+            return f"{minutos}m {segs}s"
+        else:
+            return f"{segs}s"
+    
+    logger.info("[EXTRATOR.ASYNC.XML.INICIO] Iniciando download de XMLs pendentes...")
     
     # Importa função de otimização do utils.py
     try:
         from utils import _verificar_views_e_indices_disponiveis, SQLITE_PRAGMAS
         usar_otimizacoes_avancadas = True
+        logger.debug("[EXTRATOR.ASYNC.XML.CONFIG] Usando otimizações avançadas disponíveis")
     except ImportError:
-        logger.warning("[XML] Funções de otimização não disponíveis, usando método padrão")
+        logger.warning("[EXTRATOR.ASYNC.XML.CONFIG] Funções de otimização não disponíveis - usando método padrão")
         usar_otimizacoes_avancadas = False
         SQLITE_PRAGMAS = {
             "journal_mode": "WAL",
             "synchronous": "NORMAL", 
             "temp_store": "MEMORY"
         }
+    
+    inicio_download = time.time()
     
     try:
         with conexao_otimizada(db_path) as conn:
@@ -415,26 +500,59 @@ async def baixar_xmls(client: OmieClient, db_name: str, db_path: str = "omie.db"
             rows = cursor.fetchall()
               
     except sqlite3.OperationalError as e:
-        logger.error("[XML] Erro ao conectar ao banco de dados: %s", e)
+        logger.error("[EXTRATOR.ASYNC.XML.DB.ERRO] Erro ao conectar ao banco de dados: %s", e)
         return
     
     total_pendentes = len(rows)
-    logger.info(f"[XML] {total_pendentes} XMLs pendentes encontrados para download")
+    logger.info(f"[EXTRATOR.ASYNC.XML.DESCOBERTA] {total_pendentes:,} XMLs pendentes encontrados para download")
     
     if not rows:
-        logger.info("[XML] Nenhum XML pendente para download")
+        logger.info("[EXTRATOR.ASYNC.XML.VAZIO] Nenhum XML pendente para download - processo concluído")
+        return
         return
 
     semaphore = asyncio.Semaphore(client.semaphore._value)
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=360)) as session:
+    concorrencia = client.semaphore._value
+    logger.info(f"[EXTRATOR.ASYNC.XML.CONFIG] Concorrência configurada: {concorrencia} downloads paralelos")
+    
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=600, connect=30, sock_read=300)  # 10 min total, 5 min leitura
+    ) as session:
+        logger.info("[EXTRATOR.ASYNC.XML.PROCESSAMENTO] Iniciando downloads paralelos...")
         await asyncio.gather(*[baixar_xml_individual(session, client, row, semaphore, db_name) for row in rows])
-    logger.info("[XML] Concluido download de XMLs.")
+        
+    fim_download = time.time()
+    tempo_total = fim_download - inicio_download
+    
+    logger.info("[EXTRATOR.ASYNC.XML.SUCESSO] ✅ Download de XMLs concluído com sucesso")
+    logger.info(f"[EXTRATOR.ASYNC.XML.RESULTADO] • XMLs processados: {total_pendentes:,}")
+    logger.info(f"[EXTRATOR.ASYNC.XML.TEMPO] • Tempo total: {_formatar_tempo_total(tempo_total)} ({tempo_total:.2f}s)")
+    if tempo_total > 0:
+        velocidade = total_pendentes / tempo_total
+        logger.info(f"[EXTRATOR.ASYNC.XML.PERFORMANCE] • Velocidade média: {velocidade:.1f} XMLs/s")
     
 # ---------------------------------------------------------------------------
 
 
 async def main():
-    logger.info("[MAIN] Inicio da execucao assincrona")
+    def _formatar_tempo_total(segundos: float) -> str:
+        """Converte segundos em formato legível."""
+        if segundos < 0:
+            return "0s"
+        
+        horas = int(segundos // 3600)
+        minutos = int((segundos % 3600) // 60)
+        segs = int(segundos % 60)
+        
+        if horas > 0:
+            return f"{horas}h {minutos}m {segs}s"
+        elif minutos > 0:
+            return f"{minutos}m {segs}s"
+        else:
+            return f"{segs}s"
+    
+    inicio_execucao = time.time()
+    logger.info("[EXTRATOR.ASYNC.MAIN.INICIO] Iniciando execução assíncrona completa")
 
     # Criação do diretório
     log_dir = Path("log")
@@ -453,15 +571,18 @@ async def main():
             logging.StreamHandler(sys.stdout)
         ]
     )
+    logger.info(f"[EXTRATOR.ASYNC.MAIN.CONFIG] Logging configurado - arquivo: {log_file}")
+    
     # Use explicitamente o carregar_configuracoes do omie_client_async
     config = carregar_configuracoes_client()
 
     # Log das credenciais para debug
-    logger.info(f"[CREDENCIAIS] app_key: {config.get('app_key')}, app_secret: {config.get('app_secret')}")
+    logger.info(f"[EXTRATOR.ASYNC.MAIN.CREDENCIAIS] Configuração carregada - app_key: {bool(config.get('app_key'))}, app_secret: {bool(config.get('app_secret'))}")
     if not config.get('app_key') or not config.get('app_secret'):
-        logger.error("[CREDENCIAIS] app_key ou app_secret estão vazios! Verifique o arquivo configuracao.ini e a função carregar_configuracoes.")
+        logger.error("[EXTRATOR.ASYNC.MAIN.ERRO] ❌ app_key ou app_secret estão vazios! Verifique o arquivo configuracao.ini")
 
     db_name = config.get("db_name", "omie.db")
+    logger.info(f"[EXTRATOR.ASYNC.MAIN.DB] Banco de dados: {db_name}")
 
     client = OmieClient(
         app_key=config["app_key"],
@@ -471,11 +592,29 @@ async def main():
         base_url_xml=config["base_url_xml"],
     )
 
+    logger.info("[EXTRATOR.ASYNC.MAIN.PIPELINE] Iniciando pipeline de extração completo...")
+    
+    # Etapa 1: Inicializar banco
+    logger.info("[EXTRATOR.ASYNC.MAIN.ETAPA1] Inicializando banco de dados...")
     iniciar_db(db_name, TABLE_NAME)
+    
+    # Etapa 2: Listar notas fiscais
+    logger.info("[EXTRATOR.ASYNC.MAIN.ETAPA2] Executando listagem de notas fiscais...")
     await listar_nfs(client, config, db_name)
+    
+    # Etapa 3: Atualizar indexação temporal
+    logger.info("[EXTRATOR.ASYNC.MAIN.ETAPA3] Atualizando indexação temporal (anomesdia)...")
     await atualizar_anomesdia(db_name)
+    
+    # Etapa 4: Baixar XMLs
+    logger.info("[EXTRATOR.ASYNC.MAIN.ETAPA4] Executando download de XMLs...")
     await baixar_xmls(client, db_name)
-    logger.info("[MAIN] Processo finalizado com sucesso")
+    
+    fim_execucao = time.time()
+    tempo_total_execucao = fim_execucao - inicio_execucao
+    
+    logger.info("[EXTRATOR.ASYNC.MAIN.SUCESSO] ✅ Pipeline de extração finalizado com sucesso")
+    logger.info(f"[EXTRATOR.ASYNC.MAIN.TEMPO] Tempo total de execução: {_formatar_tempo_total(tempo_total_execucao)} ({tempo_total_execucao:.2f}s)")
 
 
 if __name__ == "__main__":
