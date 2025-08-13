@@ -205,7 +205,6 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
                 WHERE dEmi IS NOT NULL 
                 AND dEmi != '' 
                 AND dEmi != '-'
-                AND (anomesdia IS NULL OR anomesdia = 0)
             """)
             registros = await cursor.fetchall()
             await cursor.close()
@@ -221,8 +220,9 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
                     if data_normalizada:
                         # Converte para YYYYMMDD
                         dia, mes, ano = data_normalizada.split('/')
+                        anomes = int(f"{ano}{mes}")
                         anomesdia = int(f"{ano}{mes}{dia}")
-                        atualizacoes.append((anomesdia, chave))
+                        atualizacoes.append((anomesdia, anomes, chave))
                     else:
                         logger.warning(f"[ANOMESDIA] Data inválida para chave {chave}: {dEmi}")
                         erros += 1
@@ -232,7 +232,7 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
             if atualizacoes:
                 await conn.executemany(f"""
                     UPDATE {table_name} 
-                    SET anomesdia = ? 
+                    SET anomesdia = ?, anomes = ?
                     WHERE cChaveNFe = ?
                 """, atualizacoes)
                 await conn.commit()

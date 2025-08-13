@@ -6,18 +6,16 @@ SELECT cChaveNFe, COUNT(*) as qtd
 FROM notas
 GROUP BY cChaveNFe
 HAVING qtd > 1;
+ALTER TABLE notas add COLUMN anomes INTEGER DEFAULT NULL
 
 SELECT * FROM notas WHERE anomesdia = (SELECT MAX(anomesdia) FROM notas);
 SELECT * FROM notas WHERE anomesdia = 20250728;
 SELECT* from notas where dEmi = '28/07/2025'
 SELECT* from notas where dEmi = '08/08/2025'
-SELECT * from notas where nNF in ('01435150', '01435151', '01433565', '01433566', '01433567', '01432319','01432320')
+SELECT * from notas where nNF in ('01431283', '01431528', '01431530', '01431561', '01431564', '01431822', '01431935', '01432320', '01432576', '01433546', '01433565', '01433566', '01433567', '01436370', '01437480', '01437619', '01437645', '01437994', '01438151', '01438596', '01438690', '01438931', '01439091', '01440951', '01441109')
 
-SELECT * FROM notas WHERE caminho_arquivo is NULL
-
-
-SELECT cChaveNFe, dEmi, nNF, caminho_arquivo, anomesdia  FROM notas WHERE xml_baixado = 0 OR xml_vazio = 1
-
+UPDATE notas SET xml_baixado = 0 WHERE nNF in ('01435150', '01435151', '01433565', '01433566', '01433567', '01432319','01432320')
+Update notas SET xml_baixado = 0 where nNF in ('01431283', '01431528', '01431530', '01431561', '01431564', '01431822', '01431935', '01432320', '01432576', '01433546', '01433565', '01433566', '01433567', '01436370', '01437480', '01437619', '01437645', '01437994', '01438151', '01438596', '01438690', '01438931', '01439091', '01440951', '01441109')
 -- Notas baixadas
 SELECT * FROM notas WHERE xml_baixado = 1;
 

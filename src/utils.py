@@ -157,6 +157,7 @@ SCHEMA_NOTAS_CREATE = """
         vNF REAL,
         
         -- Campos de controle
+        anomes INTEGER DEFAULT NULL,
         anomesdia INTEGER DEFAULT NULL,
         xml_vazio INTEGER DEFAULT 0,
         xml_baixado BOOLEAN DEFAULT 0,
@@ -2580,8 +2581,8 @@ def garantir_coluna_anomesdia(db_path: str = "omie.db", table_name: str = "notas
             cursor.execute(f"PRAGMA table_info({table_name})")
             colunas = [coluna[1] for coluna in cursor.fetchall()]
             
-            if 'anomesdia' in colunas:
-                logger.debug("[ANOMESDIA] Coluna anomesdia já existe")
+            if 'anomesdia' and 'anomes' in colunas:
+                logger.debug("[ANOMESDIA] Coluna anomesdia e anomes já existem")
                 return True
             
             # Adiciona a coluna anomesdia
@@ -2589,6 +2590,7 @@ def garantir_coluna_anomesdia(db_path: str = "omie.db", table_name: str = "notas
             cursor.execute(f"""
                 ALTER TABLE {table_name} 
                 ADD COLUMN anomesdia INTEGER DEFAULT NULL
+                ADD COLUMN anomes INTEGER DEFAULT NULL
             """)
             
             conn.commit()
@@ -2659,7 +2661,8 @@ def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas") -> 
                         # Converte para YYYYMMDD
                         dia, mes, ano = data_normalizada.split('/')
                         anomesdia = int(f"{ano}{mes}{dia}")
-                        atualizacoes.append((anomesdia, chave))
+                        anomes = int(f"{ano}{mes}")
+                        atualizacoes.append((anomesdia, anomes, chave))
                     else:
                         logger.warning(f"[ANOMESDIA] Data inválida para chave {chave}: {dEmi}")
                         erros += 1
@@ -2672,7 +2675,7 @@ def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas") -> 
             if atualizacoes:
                 cursor.executemany(f"""
                     UPDATE {table_name} 
-                    SET anomesdia = ? 
+                    SET anomesdia = ?, anomes = ?
                     WHERE cChaveNFe = ?
                 """, atualizacoes)
                 
