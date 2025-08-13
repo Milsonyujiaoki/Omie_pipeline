@@ -13,7 +13,7 @@ import logging
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple, Union
 from threading import Lock
 import concurrent.futures
 import aiohttp
@@ -30,7 +30,6 @@ from src.utils import (
     gerar_xml_path_otimizado,
     conexao_otimizada,
     gerar_pasta_xml_path,
-    atualizar_anomesdia,
     normalizar_data,
     respeitar_limite_requisicoes_async,
     log_configuracoes
@@ -103,7 +102,7 @@ def respeitar_limite_requisicoes() -> None:
         ULTIMA_REQUISICAO = time.monotonic()
 
 
-def normalizar_nota(nf: dict[str, Any]) -> dict[str, Any]:
+def normalizar_nota(nf: Dict[str, Any]) -> Dict[str, Any]:
     try:
         return {
             "cChaveNFe": nf["compl"].get("cChaveNFe"),
@@ -134,8 +133,8 @@ async def call_api(
     client: OmieClient,
     session: aiohttp.ClientSession,
     metodo: str,
-    payload: dict[str, Any],
-):
+    payload: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
     """
     Função síncrona para chamada de API com retentativas e backoff.
     """
@@ -208,13 +207,16 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
             """)
             registros = await cursor.fetchall()
             await cursor.close()
+            
             if not registros:
                 logger.info("[ANOMESDIA] Nenhum registro para atualizar")
                 return 0
-            logger.info(f"[ANOMESDIA] Processando {len(registros)} registros...")
+            
+            registros_list = list(registros)  # Converte para lista para usar len()
+            logger.info(f"[ANOMESDIA] Processando {len(registros_list)} registros...")
             atualizacoes = []
             erros = 0
-            for chave, dEmi in registros:
+            for chave, dEmi in registros_list:
                 try:
                     data_normalizada = normalizar_data(dEmi)
                     if data_normalizada:
@@ -252,7 +254,7 @@ async def atualizar_anomesdia(db_path: str = "omie.db", table_name: str = "notas
         return 0
 
 
-async def listar_nfs(client: OmieClient, config: dict[str, Any], db_name: str):
+async def listar_nfs(client: OmieClient, config: Dict[str, Any], db_name: str) -> None:
     logger.info("[EXTRATOR.ASYNC.LISTAR.NFS] Iniciando listagem de notas fiscais...")
 
     try:
@@ -265,7 +267,7 @@ async def listar_nfs(client: OmieClient, config: dict[str, Any], db_name: str):
 
     total_registros_salvos = 0
 
-    async def processar_pagina(pagina: int, semaphore: asyncio.Semaphore, session: aiohttp.ClientSession):
+    async def processar_pagina(pagina: int, semaphore: asyncio.Semaphore, session: aiohttp.ClientSession) -> int:
         async with semaphore:
             payload = {
                 "pagina": pagina,
@@ -281,6 +283,10 @@ async def listar_nfs(client: OmieClient, config: dict[str, Any], db_name: str):
             }
             try:
                 data = await client.call_api(session, "ListarNF", payload)
+                if data is None:
+                    logger.warning("[NFS] Resposta nula da API para página %s", pagina)
+                    return 0
+                
                 notas = data.get("nfCadastro", [])
                 if not notas:
                     logger.info("[NFS] Pagina %s sem notas.", pagina)
@@ -297,7 +303,8 @@ async def listar_nfs(client: OmieClient, config: dict[str, Any], db_name: str):
                 )
                 total_registros_processados = resultado_salvamento.get('total_processados', len(registros))
                 logger.info("[NFS] Pagina %s processada (%s registros).", pagina, total_registros_processados)
-                return resultado_salvamento.get('inseridos', len(registros))
+                inseridos = resultado_salvamento.get('inseridos', len(registros))
+                return inseridos if isinstance(inseridos, int) else len(registros)
             except Exception as exc:
                 logger.exception("[NFS] Erro na listagem pagina %s: %s", pagina, exc)
                 return 0
@@ -317,13 +324,17 @@ async def listar_nfs(client: OmieClient, config: dict[str, Any], db_name: str):
             "ordenar_por": "CODIGO",
         }
         data_inicial = await client.call_api(session, "ListarNF", payload_inicial)
+        if data_inicial is None:
+            logger.error("[NFS] Falha ao obter informações iniciais da API")
+            return
+        
         total_paginas = data_inicial.get("total_de_paginas", 1)
         logger.info(f"[NFS] Total de páginas a processar: {total_paginas}")
 
         semaphore = asyncio.Semaphore(2)  # Limite de 2 requisições concorrentes
         tasks = [processar_pagina(p, semaphore, session) for p in range(1, total_paginas + 1)]
         resultados = await asyncio.gather(*tasks)
-        total_registros_salvos = sum(resultados)
+        total_registros_salvos = sum(r for r in resultados if isinstance(r, int))
 
     logger.info(f"[NFS] Listagem concluida. {total_registros_salvos} registros processados.")
     
@@ -335,13 +346,21 @@ async def baixar_xml_individual(
     db_name: str,
 ):
     async with semaphore:
+        # Validação do tamanho da tupla antes do desempacotamento
+        if len(row) < 4:
+            logger.error(f"[XML] Tupla com dados insuficientes: {row}")
+            return
+            
         # Adaptação para suportar tanto 4 quanto 5 campos (com anomesdia da consulta otimizada)
-        if len(row) > 4:
-            chave, dEmi, num_nfe,nIdNF, anomesdia = row
-            #cChaveNFe, dEmi, nNF, nIdNF, anomesdia
-        else:
-            chave, dEmi, num_nfe,nIdNF = row
-            anomesdia = None
+        try:
+            if len(row) > 4:
+                chave, dEmi, num_nfe, nIdNF, anomesdia = row[0], row[1], row[2], row[3], row[4]
+            else:
+                chave, dEmi, num_nfe, nIdNF = row[0], row[1], row[2], row[3]
+                anomesdia = None
+        except IndexError as e:
+            logger.error(f"[XML] Erro ao desempacotar row {row}: {e}")
+            return
             
         try:
             pasta, caminho = gerar_pasta_xml_path(chave, dEmi, num_nfe)
@@ -351,6 +370,10 @@ async def baixar_xml_individual(
             baixado_novamente = caminho.exists()
 
             data = await client.call_api(session, "ObterNfe", {"nIdNfe": nIdNF})
+            if data is None:
+                logger.warning(f"[XML] Resposta nula da API para chave {chave}")
+                return
+            
             xml_str = html.unescape(data.get("cXmlNfe", ""))
 
             if not xml_str.strip():
@@ -412,20 +435,21 @@ async def baixar_xmls(client: OmieClient, db_name: str, db_path: str = "omie.db"
 
 async def main():
     logger.info("[MAIN] Inicio da execucao assincrona")
-    """ # Criação do diretório
+
+    # Criação do diretório
     log_dir = Path("log")
     log_dir.mkdir(exist_ok=True)
     
     # Timestamp único
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_file = log_dir / f"extrator_async_{timestamp}.log" """
+    log_file = log_dir / f"extrator_async_{timestamp}.log" 
 
     # Configuração básica de logging para acompanhar execução
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler('log/extrator_async.log', encoding='utf-8'),
+            logging.FileHandler(log_file, encoding='utf-8'),
             logging.StreamHandler(sys.stdout)
         ]
     )
@@ -449,7 +473,7 @@ async def main():
 
     iniciar_db(db_name, TABLE_NAME)
     await listar_nfs(client, config, db_name)
-    await atualizar_anomesdia(client, db_name)
+    await atualizar_anomesdia(db_name)
     await baixar_xmls(client, db_name)
     logger.info("[MAIN] Processo finalizado com sucesso")
 
