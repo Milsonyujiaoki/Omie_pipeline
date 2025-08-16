@@ -33,3 +33,5 @@ backup_uploads
 src/__pycache__
 configuracao.ini
 configuracao.ini
+*.ini
+configuracao.ini

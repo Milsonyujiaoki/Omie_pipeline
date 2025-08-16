@@ -50,11 +50,19 @@ from pathlib import Path
 from datetime import datetime
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional, List, Dict, Tuple, Set
+from typing import Optional, List, Dict, Tuple, Set, Any
 import logging
 
-from utils import criar_lockfile, listar_xmls_hibrido
-from upload_onedrive import fazer_upload_lote
+from src.utils import criar_lockfile, listar_xmls_hibrido
+from src.upload_onedrive import fazer_upload_lote
+
+# Importa módulo S3 (import condicional para evitar erro se não disponível)
+try:
+    from src.aws_s3_upload import criar_s3_uploader_from_config, upload_arquivos_s3
+    S3_DISPONIVEL = True
+except ImportError:
+    S3_DISPONIVEL = False
+    logger.warning("[CONFIG] Módulo AWS S3 não disponível. Upload S3 desabilitado.")
 
 # =============================================================================
 # CONFIGURAcoO DE LOGGING
@@ -75,6 +83,7 @@ config.read(CONFIG_PATH)
 LIMITE_POR_PASTA: int = int(config.get("compactador", "arquivos_por_pasta", fallback="10000"))
 RESULTADO_DIR: Path = Path(config.get("paths", "resultado_dir", fallback="resultado"))
 UPLOAD_ONEDRIVE: bool = config.getboolean("ONEDRIVE", "upload_onedrive", fallback=False)
+UPLOAD_S3: bool = config.getboolean("AWS_S3", "upload_s3", fallback=False)
 MAX_WORKERS: int = int(config.get("compactador", "max_workers", fallback=str(os.cpu_count() or 4)))
 
 # Configuracões de compressoo
@@ -488,8 +497,9 @@ def obter_pastas_para_compactar(diretorio_base: Path = RESULTADO_DIR) -> List[Pa
 def compactar_resultados(
     diretorio_base: Path = RESULTADO_DIR,
     limite_por_pasta: int = LIMITE_POR_PASTA,
-    fazer_upload: bool = UPLOAD_ONEDRIVE
-) -> Dict[str, any]:
+    fazer_upload: bool = UPLOAD_ONEDRIVE,
+    fazer_upload_s3: bool = UPLOAD_S3
+) -> Dict[str, Any]:
     """
     funcao principal para compactacoo de resultados com upload opcional.
     
@@ -528,11 +538,15 @@ def compactar_resultados(
         "diretorio_base": str(diretorio_base),
         "limite_por_pasta": limite_por_pasta,
         "upload_configurado": fazer_upload,
+        "upload_s3_configurado": fazer_upload_s3,
         "pastas_encontradas": 0,
         "pastas_processadas": 0,
         "zips_criados": 0,
         "upload_realizado": False,
+        "upload_s3_realizado": False,
         "arquivos_enviados": 0,
+        "arquivos_s3_enviados": 0,
+        "s3_stats": {},
         "tempo_total": 0.0,
         "erros": []
     }
@@ -562,7 +576,7 @@ def compactar_resultados(
         # Upload automatico se configurado
         if fazer_upload and zips_criados:
             try:
-                logger.info("[COMPACTADOR] Iniciando upload automatico...")
+                logger.info("[COMPACTADOR] Iniciando upload OneDrive...")
                 
                 resultados_upload = fazer_upload_lote(zips_criados, "XML_Compactados")
                 
@@ -570,11 +584,37 @@ def compactar_resultados(
                 relatorio["upload_realizado"] = True
                 relatorio["arquivos_enviados"] = arquivos_enviados
                 
-                logger.info(f"[COMPACTADOR] Upload concluido: {arquivos_enviados}/{len(zips_criados)} arquivos")
+                logger.info(f"[COMPACTADOR] Upload OneDrive concluído: {arquivos_enviados}/{len(zips_criados)} arquivos")
                 
             except Exception as e:
-                logger.error(f"[COMPACTADOR] Erro no upload automatico: {e}")
-                relatorio["erros"].append(f"Erro no upload: {e}")
+                logger.error(f"[COMPACTADOR] Erro no upload OneDrive: {e}")
+                relatorio["erros"].append(f"Erro no upload OneDrive: {e}")
+        
+        # Upload S3 se configurado
+        if fazer_upload_s3 and zips_criados and S3_DISPONIVEL:
+            try:
+                logger.info("[COMPACTADOR] Iniciando upload AWS S3...")
+                
+                uploader_s3 = criar_s3_uploader_from_config()
+                resultados_s3 = uploader_s3.upload_lote(zips_criados)
+                
+                arquivos_s3_enviados = sum(1 for resultado in resultados_s3.values() if resultado.sucesso)
+                relatorio["upload_s3_realizado"] = True
+                relatorio["arquivos_s3_enviados"] = arquivos_s3_enviados
+                
+                # Estatísticas do upload S3
+                stats_s3 = uploader_s3.obter_estatisticas()
+                relatorio["s3_stats"] = stats_s3
+                
+                logger.info(f"[COMPACTADOR] Upload S3 concluído: {arquivos_s3_enviados}/{len(zips_criados)} arquivos")
+                logger.info(f"[COMPACTADOR] S3 Stats - Sucesso: {stats_s3['uploads_sucesso']}, Falhas: {stats_s3['uploads_falha']}")
+                
+            except Exception as e:
+                logger.error(f"[COMPACTADOR] Erro no upload S3: {e}")
+                relatorio["erros"].append(f"Erro no upload S3: {e}")
+        elif fazer_upload_s3 and not S3_DISPONIVEL:
+            logger.warning("[COMPACTADOR] Upload S3 solicitado mas módulo não disponível")
+            relatorio["erros"].append("Upload S3 solicitado mas módulo não disponível")
         
         # Metricas finais
         tempo_total = time.time() - tempo_inicio
@@ -682,9 +722,17 @@ def main() -> None:
         logger.info("[MAIN] Relatorio final:")
         logger.info(f"  - Pastas processadas: {relatorio['pastas_processadas']}/{relatorio['pastas_encontradas']}")
         logger.info(f"  - ZIPs criados: {relatorio['zips_criados']}")
-        logger.info(f"  - Upload realizado: {relatorio['upload_realizado']}")
-        logger.info(f"  - Arquivos enviados: {relatorio['arquivos_enviados']}")
+        logger.info(f"  - Upload OneDrive: {relatorio['upload_realizado']}")
+        logger.info(f"  - Arquivos OneDrive enviados: {relatorio['arquivos_enviados']}")
+        logger.info(f"  - Upload S3: {relatorio['upload_s3_realizado']}")
+        logger.info(f"  - Arquivos S3 enviados: {relatorio['arquivos_s3_enviados']}")
         logger.info(f"  - Tempo total: {relatorio['tempo_total']:.2f}s")
+        
+        # Estatísticas detalhadas do S3
+        if relatorio.get('s3_stats'):
+            s3_stats = relatorio['s3_stats']
+            logger.info(f"  - S3 Taxa de sucesso: {s3_stats.get('taxa_sucesso', 0):.1f}%")
+            logger.info(f"  - S3 Velocidade média: {s3_stats.get('velocidade_media_mbps', 0):.2f} MB/s")
         
         if relatorio["erros"]:
             logger.warning(f"  - Erros encontrados: {len(relatorio['erros'])}")
