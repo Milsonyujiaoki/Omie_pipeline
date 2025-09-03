@@ -197,22 +197,32 @@ def carregar_configuracoes(config_path: str = "configuracao.ini") -> dict:
     # Leitura de todas as seções e conversão de tipos
     return {
         "paths": {
+            "projeto_base_dir": config.get("paths", "projeto_base_dir", fallback="."),
             "resultado_dir": config.get("paths", "resultado_dir", fallback="resultado"),
-            "db_name": config.get("paths", "db_name", fallback="omie.db"),
+            "db_path": config.get("paths", "db_path", fallback="omie.db"),
+            "db_name": config.get("paths", "db_name", fallback="omie.db"),  # Mantido para compatibilidade
             "log_dir": config.get("paths", "log_dir", fallback="log"),
             "temp_dir": config.get("paths", "temp_dir", fallback="temp"),
+            "cache_dir": config.get("paths", "cache_dir", fallback="cache"),
+            "relatorio_arquivos_vazios": config.get("paths", "relatorio_arquivos_vazios", fallback="relatorio_arquivos_vazios.xlsx"),
         },
         "compactador": {
             "arquivos_por_pasta": config.getint("compactador", "arquivos_por_pasta", fallback=10000),
             "max_workers": config.getint("compactador", "max_workers", fallback=4),
-            "batch_size": config.getint("compactador", "batch_size", fallback=1000),
+            "batch_size": config.getint("compactador", "batch_size", fallback=200),
         },
         "ONEDRIVE": {
             "upload_onedrive": config.getboolean("ONEDRIVE", "upload_onedrive", fallback=False),
-            "pasta_destino": config.get("ONEDRIVE", "pasta_destino", fallback="Documentos Compartilhados"),
+            "pasta_destino": config.get("ONEDRIVE", "pasta_destino", fallback="XML_Compactados"),
             "upload_max_retries": config.getint("ONEDRIVE", "upload_max_retries", fallback=3),
             "upload_backoff_factor": config.getfloat("ONEDRIVE", "upload_backoff_factor", fallback=1.5),
             "upload_retry_status": config.get("ONEDRIVE", "upload_retry_status", fallback="429,500,502,503,504"),
+            "client_id": config.get("ONEDRIVE", "client_id", fallback=""),
+            "client_secret": config.get("ONEDRIVE", "client_secret", fallback=""),
+            "tenant_id": config.get("ONEDRIVE", "tenant_id", fallback=""),
+            "site_url": config.get("ONEDRIVE", "site_url", fallback=""),
+            "drive_name": config.get("ONEDRIVE", "drive_name", fallback=""),
+            "folder_path": config.get("ONEDRIVE", "folder_path", fallback="Documentos Compartilhados"),
         },
         "omie_api": {
             "app_key": config.get("omie_api", "app_key"),
@@ -232,9 +242,52 @@ def carregar_configuracoes(config_path: str = "configuracao.ini") -> dict:
             "reprocessar_automaticamente": config.getboolean("pipeline", "reprocessar_automaticamente", fallback=True),
             "apenas_normal": config.getboolean("pipeline", "apenas_normal", fallback=False),
         },
+        "manutencao": {
+            "manter_ultimos_meses": config.getint("manutencao", "manter_ultimos_meses", fallback=2),
+            "limpeza_automatica": config.getboolean("manutencao", "limpeza_automatica", fallback=False),
+            "intervalo_limpeza_dias": config.getint("manutencao", "intervalo_limpeza_dias", fallback=30),
+            "backup_antes_remover": config.getboolean("manutencao", "backup_antes_remover", fallback=True),
+            "comprimir_arquivos_antigos": config.getboolean("manutencao", "comprimir_arquivos_antigos", fallback=True),
+        },
         "logging": {
             "log_level": config.get("logging", "log_level", fallback="INFO"),
-            "log_file": config.get("logging", "log_file", fallback="extrator.log"),
+            "log_file": config.get("logging", "log_file", fallback="Pipeline_omie.log"),
+            "manter_logs_dias": config.getint("logging", "manter_logs_dias", fallback=30),
+        },
+        "performance": {
+            "timeout_relatorio_segundos": config.getint("performance", "timeout_relatorio_segundos", fallback=1800),
+            "max_workers_relatorio": config.getint("performance", "max_workers_relatorio", fallback=5),
+            "batch_size_relatorio": config.getint("performance", "batch_size_relatorio", fallback=1000),
+            "chunk_size_arquivo": config.getint("performance", "chunk_size_arquivo", fallback=8192),
+        },
+        "retry": {
+            "max_retries": config.getint("retry", "max_retries", fallback=3),
+            "delay_base": config.getfloat("retry", "delay_base", fallback=1.0),
+            "timeout_conexao": config.getint("retry", "timeout_conexao", fallback=30),
+            "timeout_total": config.getint("retry", "timeout_total", fallback=180),
+        },
+        "concorrencia": {
+            "max_concurrent": config.getint("concorrencia", "max_concurrent", fallback=4),
+            "calls_per_second_global": config.getint("concorrencia", "calls_per_second_global", fallback=4),
+            "intervalo_minimo_requisicoes": config.getfloat("concorrencia", "intervalo_minimo_requisicoes", fallback=0.25),
+        },
+        "cache": {
+            "sqlite_cache_size": config.getint("cache", "sqlite_cache_size", fallback=-64000),
+            "sqlite_mmap_size": config.getint("cache", "sqlite_mmap_size", fallback=268435456),
+            "cache_diretorios": config.getboolean("cache", "cache_diretorios", fallback=True),
+            "extensoes_ignoradas": config.get("cache", "extensoes_ignoradas", fallback=".tmp,.log,.lock,.bak,.cache"),
+        },
+        "AWS_S3": {
+            "bucket_name": config.get("AWS_S3", "bucket_name", fallback=""),
+            "region_name": config.get("AWS_S3", "region_name", fallback="us-east-1"),
+            "max_retries": config.getint("AWS_S3", "max_retries", fallback=3),
+            "timeout": config.getint("AWS_S3", "timeout", fallback=300),
+            "upload_s3": config.getboolean("AWS_S3", "upload_s3", fallback=False),
+            "prefixo_base": config.get("AWS_S3", "prefixo_base", fallback="resultado"),
+        },
+        "AWS_CREDENTIALS": {
+            "aws_access_key_id": config.get("AWS_CREDENTIALS", "aws_access_key_id", fallback=""),
+            "aws_secret_access_key": config.get("AWS_CREDENTIALS", "aws_secret_access_key", fallback=""),
         }
     }
 
@@ -1693,12 +1746,24 @@ def atualizar_campos_registros_pendentes(db_path: str, resultado_dir: str = "res
     
     logger.info("[ATUALIZACAO_PENDENTES] Iniciando verificação otimizada de arquivos baixados...")
     etapa_inicio = time.time()
+
     
     # 0. Verificação de otimizações disponíveis
     logger.info("[ATUALIZACAO_PENDENTES.VERIFICACAO_VIEWS_INDICES] Iniciando verificação de otimizações disponíveis no banco...")
     db_otimizacoes = _verificar_views_e_indices_disponiveis(db_path)
     views_disponiveis = sum(1 for k, v in db_otimizacoes.items() if k.startswith('vw_') and v)
     indices_disponiveis = sum(1 for k, v in db_otimizacoes.items() if k.startswith('idx_') and v)
+    
+    if views_disponiveis == 0 or indices_disponiveis == 0:
+        logger.warning("[ATUALIZACAO_PENDENTES.VERIFICACAO_VIEWS_INDICES] Atenção: Nenhuma view ou índice específico encontrado. A performance pode ser impactada.")
+        logger.info("[ATUALIZACAO_PENDENTES.VERIFICACAO_VIEWS_INDICES] Considerando reindexação ou criação de views específicas.")
+        if views_disponiveis == 0:
+            criar_views_otimizadas(db_path)
+            logger.info("[ATUALIZACAO_PENDENTES.VERIFICACAO_VIEWS_INDICES] Views otimizadas criadas.")
+        elif indices_disponiveis == 0:
+            criar_indices_otimizados(conexao_otimizada(db_path).__enter__(), "notas")
+            logger.info("[ATUALIZACAO_PENDENTES.VERIFICACAO_VIEWS_INDICES] Índices otimizados criados.")
+
     logger.info(f"[ATUALIZACAO_PENDENTES.VERIFICACAO_VIEWS_INDICES] Otimizações DB: {views_disponiveis} views, {indices_disponiveis} índices específicos")
 
     # 1. Indexação dos XMLs com extração de dados dos nomes

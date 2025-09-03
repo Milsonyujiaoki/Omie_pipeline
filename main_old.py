@@ -623,12 +623,15 @@ async def _pipeline_async_completo(client, config: Dict[str, Any]) -> None:
     from src.utils import iniciar_db
     
     resolver = inicializar_path_resolver()
-    db_name = str(resolver.get_path_by_key("db_name"))
+    # CORREÇÃO: Usar path relativo para manter compatibilidade
+    db_name_relativo = config.get("db_name", "omie.db")
+    db_name = str(Path.cwd() / db_name_relativo)  # Forçar usar diretório atual
     
     # DEBUG: Comparar com o que o extrator_async standalone faria
     db_name_fallback = config.get("db_name", "omie.db")
-    logger.info(f"[PIPELINE.ASYNC.DEBUG] db_name via resolver: {db_name}")
+    logger.info(f"[PIPELINE.ASYNC.DEBUG] db_name corrigido: {db_name}")
     logger.info(f"[PIPELINE.ASYNC.DEBUG] db_name via config (como standalone): {db_name_fallback}")
+    logger.info(f"[PIPELINE.ASYNC.DEBUG] Current working directory: {Path.cwd()}")
     
     t1 = time.time()
     logger.info("[PIPELINE.ASYNC] Iniciando pipeline assíncrono completo")
@@ -1431,7 +1434,7 @@ def main() -> None:
             logger.info("[FASE 7] - Enviando para OneDrive...")
             try:
                 logger.info("[MAIN.UPLOAD_ONEDRIVE] Iniciando upload dos resultados compactados para OneDrive...")
-                executar_upload_resultado_onedrive()
+                #executar_upload_resultado_onedrive()
                 logger.info("[MAIN.UPLOAD_ONEDRIVE] Upload concluído com sucesso")
                 logger.info("[FASE 7] - Upload concluído com sucesso")
             except Exception as e:

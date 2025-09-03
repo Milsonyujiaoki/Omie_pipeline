@@ -56,6 +56,12 @@ import logging
 from src.utils import criar_lockfile, listar_xmls_hibrido
 from src.upload_onedrive import fazer_upload_lote
 
+# =============================================================================
+# CONFIGURAcoO DE LOGGING
+# =============================================================================
+
+logger = logging.getLogger(__name__)
+
 # Importa módulo S3 (import condicional para evitar erro se não disponível)
 try:
     from src.aws_s3_upload import criar_s3_uploader_from_config, upload_arquivos_s3
@@ -64,11 +70,7 @@ except ImportError:
     S3_DISPONIVEL = False
     logger.warning("[CONFIG] Módulo AWS S3 não disponível. Upload S3 desabilitado.")
 
-# =============================================================================
-# CONFIGURAcoO DE LOGGING
-# =============================================================================
 
-logger = logging.getLogger(__name__)
 
 # =============================================================================
 # CONFIGURAcoO E CONSTANTES
