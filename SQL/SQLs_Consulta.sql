@@ -1,11 +1,14 @@
 
+SELECT * FROM notas WHERE status is not NULL
+
 SELECT * FROM notas WHERE anomesdia = (SELECT MAX(anomesdia) FROM notas);
 
 UPDATE notas SET xml_baixado = 0 WHERE anomesdia between 20250801 and 20250810
 SELECT * FROM notas WHERE anomesdia between 20250801 and 20250810
+SELECT * FROM notas WHERE anomesdia in ('20250801','20250806','20250811','20250815','20250823','20250826','20250828') AND xml_baixado = 0
 SELECT * FROM notas WHERE anomes = 202507
-SELECT * FROM notas WHERE anomesdia = 20250816;
-SELECT * from notas where dEmi = '16/08/2025'
+SELECT * FROM notas WHERE anomesdia = 20250806;
+SELECT * from notas where dEmi = '11/08/2025'
 SELECT* from notas where dEmi = '08/08/2025'
 SELECT * from notas where nNF in ('01431283', '01431528', '01431530', '01431561', '01431564', '01431822', '01431935', '01432320', '01432576', '01433546', '01433565', '01433566', '01433567', '01436370', '01437480', '01437619', '01437645', '01437994', '01438151', '01438596', '01438690', '01438931', '01439091', '01440951', '01441109')
 select * from notas WHERE anomes in (202507,202506)

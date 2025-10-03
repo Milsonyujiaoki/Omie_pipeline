@@ -385,7 +385,7 @@ async def listar_nfs(client: OmieClient, config: Dict[str, Any], db_name: str) -
         logger.info(f"[EXTRATOR.ASYNC.NFS.DESCOBERTA] Total de páginas a processar: {total_paginas:,}")
         logger.info(f"[EXTRATOR.ASYNC.NFS.DESCOBERTA] Total de registros esperados: {total_registros_esperados:,}")
 
-        semaphore = asyncio.Semaphore(2)  # Limite de 2 requisições concorrentes
+        semaphore = asyncio.Semaphore(4)  # Limite de 4 requisições concorrentes
         logger.info("[EXTRATOR.ASYNC.NFS.PROCESSAMENTO] Iniciando processamento paralelo das páginas...")
         
         inicio_processamento = time.time()

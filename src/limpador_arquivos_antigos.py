@@ -277,6 +277,8 @@ class LimpadorArquivosAntigos:
         """
         Atualiza banco de dados marcando registros de diretórios removidos.
         
+        OTIMIZAÇÃO V2: Preserva informação de status ao marcar para re-download.
+        
         Args:
             diretorios_removidos: Lista de diretórios que foram removidos
         """
@@ -288,6 +290,7 @@ class LimpadorArquivosAntigos:
                 cursor = conn.cursor()
                 
                 registros_atualizados = 0
+                registros_com_status = 0
                 
                 for diretorio in diretorios_removidos:
                     try:
@@ -299,16 +302,28 @@ class LimpadorArquivosAntigos:
                             # Constrói padrão da data para busca no banco
                             data_padrao = f"{ano}-{mes.zfill(2)}-{dia.zfill(2)}"
                             
-                            # Atualiza registros que correspondem a esta data
+                            # OTIMIZAÇÃO: Preserva status ao marcar para re-download
+                            # Registros com status CANCELADA ou INUTILIZADA podem não precisar re-download
                             cursor.execute("""
                                 UPDATE notas 
                                 SET xml_baixado = 0, 
                                     caminho_arquivo = NULL,
-                                    observacoes = COALESCE(observacoes, '') || 
-                                                  CASE WHEN COALESCE(observacoes, '') = '' 
-                                                       THEN 'Arquivo removido por limpeza automática' 
-                                                       ELSE '; Arquivo removido por limpeza automática' 
-                                                  END
+                                    observacoes = CASE 
+                                        -- Se tem status e não é cancelada/inutilizada
+                                        WHEN status IS NOT NULL 
+                                             AND status NOT IN ('CANCELADA', 'INUTILIZADA') 
+                                        THEN COALESCE(observacoes, '') || 
+                                             CASE WHEN COALESCE(observacoes, '') = '' 
+                                                  THEN 'Arquivo removido por limpeza (status: ' || status || ')' 
+                                                  ELSE '; Arquivo removido por limpeza (status: ' || status || ')' 
+                                             END
+                                        -- Se não tem status ou é cancelada/inutilizada  
+                                        ELSE COALESCE(observacoes, '') || 
+                                             CASE WHEN COALESCE(observacoes, '') = '' 
+                                                  THEN 'Arquivo removido por limpeza automática' 
+                                                  ELSE '; Arquivo removido por limpeza automática' 
+                                             END
+                                    END
                                 WHERE dEmi LIKE ? 
                                    OR caminho_arquivo LIKE ?
                             """, (f"{data_padrao}%", f"%{ano}/{mes}/{dia}%"))
@@ -316,7 +331,20 @@ class LimpadorArquivosAntigos:
                             rows_affected = cursor.rowcount
                             if rows_affected > 0:
                                 registros_atualizados += rows_affected
-                                logger.debug(f"[LIMPEZA.DB] {rows_affected} registros atualizados para {data_padrao}")
+                                
+                                # Conta quantos tinham status preservado
+                                cursor.execute("""
+                                    SELECT COUNT(*) FROM notas 
+                                    WHERE (dEmi LIKE ? OR caminho_arquivo LIKE ?)
+                                      AND status IS NOT NULL 
+                                      AND status != ''
+                                """, (f"{data_padrao}%", f"%{ano}/{mes}/{dia}%"))
+                                
+                                status_count = cursor.fetchone()[0]
+                                registros_com_status += status_count
+                                
+                                logger.debug(f"[LIMPEZA.DB] {rows_affected} registros atualizados para {data_padrao} "
+                                           f"({status_count} com status preservado)")
                                 
                     except Exception as e:
                         erro = f"Erro ao atualizar registros para {diretorio}: {e}"
@@ -327,6 +355,8 @@ class LimpadorArquivosAntigos:
                 self.stats.registros_atualizados_db = registros_atualizados
                 
                 logger.info(f"[LIMPEZA.DB] {registros_atualizados} registros marcados para re-download")
+                if registros_com_status > 0:
+                    logger.info(f"[LIMPEZA.DB] {registros_com_status} registros mantiveram informação de status")
                 
         except Exception as e:
             erro = f"Erro ao atualizar banco de dados: {e}"

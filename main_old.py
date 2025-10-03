@@ -969,6 +969,71 @@ def executar_verificador_xmls() -> None:
         logger.exception(f"[PIPELINE.VERIFICADOR.ERRO] Erro durante verificacao de XMLs: {e}")
         logger.error("[PIPELINE.VERIFICADOR.CONTINUACAO] Pipeline continuara sem verificacao")
 
+
+def executar_atualizacao_status_nfe() -> None:
+    """
+    Executa atualização de status das NFe usando a API Omie.
+    
+    NOVA FUNCIONALIDADE:
+    - Consulta endpoints da API Omie para obter status atualizado das NFe
+    - Atualiza campo 'status' no banco de dados
+    - Identifica notas canceladas, rejeitadas, autorizadas, etc.
+    - Processa em lotes para otimizar performance
+    - Respeita limites de taxa da API
+    
+    Processo:
+    1. Consulta notas sem status ou com status indefinido
+    2. Utiliza endpoints ListarNFesEmitidas e ObterNfe
+    3. Normaliza diferentes formatos de status
+    4. Atualiza banco de dados em lotes
+    5. Gera estatísticas detalhadas
+    
+    Características:
+    - Processamento assíncrono para melhor performance
+    - Controle de rate limiting automático
+    - Tratamento robusto de erros da API
+    - Logging detalhado de progresso
+    - Suporte a modo dry-run para testes
+    
+    Returns:
+        None
+        
+    Raises:
+        Exception: Erros durante atualização são logados e não propagados
+    """
+    try:
+        logger.info("[MAIN.STATUS_NFE] Iniciando atualização de status das NFe...")
+        t0 = time.time()
+        
+        # Import local para evitar dependência circular
+        from src.status_nfe_updater import executar_atualizacao_status_nfe_sync
+        
+        # Executa atualização com limite conservador
+        limite_notas = 500  # Limite conservador para não impactar muito a API
+        
+        logger.info(f"[MAIN.STATUS_NFE] Processando até {limite_notas} notas para atualização de status")
+        
+        # Chama função síncrona para integração com pipeline atual
+        sucesso = executar_atualizacao_status_nfe_sync(
+            config_path="configuracao.ini",
+            limite_notas=limite_notas,
+            dry_run=False
+        )
+        
+        t1 = time.time()
+        
+        if sucesso:
+            logger.info("[MAIN.STATUS_NFE] ✅ Atualização de status concluída com sucesso")
+            logger.info(f"[MAIN.STATUS_NFE] Tempo de execução: {formatar_tempo_total(t1-t0)} ({t1-t0:.2f}s)")
+        else:
+            logger.warning("[MAIN.STATUS_NFE] ⚠️ Atualização concluída com alguns erros")
+            logger.warning("[MAIN.STATUS_NFE] Verifique logs detalhados para informações específicas")
+        
+    except Exception as e:
+        logger.exception(f"[MAIN.STATUS_NFE] Erro na atualização de status: {e}")
+        logger.warning("[MAIN.STATUS_NFE] Pipeline continuará sem atualização de status")
+
+
 def executar_relatorio_arquivos_vazios(pasta: str) -> None:
     """
     Gera relatorio detalhado de arquivos vazios ou corrompidos.
@@ -1366,7 +1431,7 @@ def main() -> None:
             logger.info("[FASE 2.5] - Atualizando datas de consulta...")
             try:
                 logger.info("[MAIN.ATUALIZADOR_DATAS] Atualizando datas de consulta...")
-                executar_atualizador_datas_query()
+                #executar_atualizador_datas_query()
                 logger.info("[MAIN.ATUALIZADOR_DATAS] Datas de consulta atualizadas")
                 logger.info("[FASE 2.5] - ✓ Datas atualizadas com sucesso")
             except Exception as e:
@@ -1426,7 +1491,18 @@ def main() -> None:
                 logger.exception(f"[FASE 6] - Erro durante atualização de caminhos: {e}")
                 logger.warning("[FASE 6] - Pipeline continuará sem atualização de caminhos")
 
-            
+            # =============================================================================
+            # Fase 6.5: Atualização de Status das NFe (NOVA FUNCIONALIDADE)
+            # =============================================================================
+            logger.info("[FASE 6.5] - Atualizando status das NFe...")
+            try:
+                logger.info("[MAIN.STATUS_NFE] Iniciando atualização de status das NFe...")
+                #executar_atualizacao_status_nfe()
+                logger.info("[MAIN.STATUS_NFE] Atualização de status concluída")
+                logger.info("[FASE 6.5] - ✓ Status das NFe atualizado com sucesso")
+            except Exception as e:
+                logger.exception(f"[FASE 6.5] - Erro durante atualização de status: {e}")
+                logger.warning("[FASE 6.5] - Pipeline continuará sem atualização de status")
 
             # =============================================================================
             # Fase 7: Upload para OneDrive

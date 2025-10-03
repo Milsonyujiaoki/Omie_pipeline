@@ -2465,7 +2465,7 @@ def salvar_varias_notas(
     db_path: str,
     validar_entrada: bool = True,
     log_detalhado: bool = False,
-    tamanho_lote: int = 200
+    tamanho_lote: int = 1000
 ) -> Dict[str, Union[int, List[str]]]:
     """
     Versão otimizada para salvamento em lote de múltiplas notas fiscais.

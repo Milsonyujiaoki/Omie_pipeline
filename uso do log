@@ -1,8 +1,0 @@
-# Ver apenas operações de banco
-grep "BANCO" log_file.log
-
-# Ver apenas erros do verificador
-grep "VERIFICADOR.XMLS.*ERRO" log_file.log
-
-# Ver progresso do extrator async
-grep "EXTRATOR.ASYNC.*PROGRESSO" log_file.log
